@@ -72,16 +72,10 @@
 	}
 
 	onMount(() => {
-		// Auto-connect if URL already stored (e.g. from previous session)
-		const existing = getStoredWsUrl();
-		if (existing) {
-			doConnect(existing);
-			return;
-		}
-
 		const params = new URLSearchParams(window.location.search);
 
-		// Auto-connect from QR code: ?token=hextoken
+		// URL params come from the current QR code and must override any stale
+		// URL saved from a previous desktop app run.
 		const tokenParam = params.get('token');
 		if (tokenParam) {
 			window.history.replaceState({}, '', window.location.pathname);
@@ -95,6 +89,13 @@
 		if (wsUrlParam) {
 			window.history.replaceState({}, '', window.location.pathname);
 			doConnect(wsUrlParam);
+			return;
+		}
+
+		// Auto-connect if URL already stored (e.g. from previous session)
+		const existing = getStoredWsUrl();
+		if (existing) {
+			doConnect(existing);
 		}
 	});
 </script>
