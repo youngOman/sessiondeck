@@ -381,6 +381,9 @@ impl LegacySessionSource {
             // strict so Claude Desktop helpers and MCP servers with args like
             // `--agent claudeCodeCLI` don't steal Claude Code sessions.
             let name_match = name.eq_ignore_ascii_case("claude");
+            if name_match && process.exe().is_some_and(is_claude_desktop_app) {
+                continue;
+            }
 
             // Also check command-line args (handles npm-installed Claude Code
             // where process.name() returns "node")
@@ -499,6 +502,11 @@ fn is_claude_code_arg(arg: &str) -> bool {
     // npm-installed Claude Code runs under node; the script path contains the
     // package name rather than ending in a `claude` binary.
     arg.contains("@anthropic-ai/claude-code") || arg.contains("/claude-code/")
+}
+
+fn is_claude_desktop_app(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str().to_string_lossy() == "Claude.app")
 }
 
 fn latest_recorded_cwd_from_str(raw: &str) -> Option<PathBuf> {
@@ -690,5 +698,15 @@ mod tests {
         assert!(!is_claude_code_arg("claudeCodeCLI"));
         assert!(!is_claude_code_arg("--agent"));
         assert!(!is_claude_code_arg("target/debug/c9watch"));
+    }
+
+    #[test]
+    fn test_is_claude_desktop_app() {
+        assert!(is_claude_desktop_app(Path::new(
+            "/Applications/Claude.app/Contents/MacOS/Claude"
+        )));
+        assert!(!is_claude_desktop_app(Path::new(
+            "/opt/homebrew/bin/claude"
+        )));
     }
 }
