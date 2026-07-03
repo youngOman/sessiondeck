@@ -186,6 +186,7 @@ See [SKILLS.md](SKILLS.md) for more install options.
 ## How it works
 
 **Live monitoring** -- A background thread polls every 2 seconds, scanning for running `claude` processes using `sysinfo`. Each process is matched to its session file in `~/.claude/projects/` via path encoding and timestamp correlation. The last N entries of each session's JSONL file are parsed to determine status:
+
 - **Working** -- Claude is generating a response or executing tools
 - **Needs Attention** -- A tool requires user approval, or Claude is asking the user a question
 - **Idle** -- Session is waiting for your next prompt
@@ -198,13 +199,13 @@ Status updates are pushed to the Svelte frontend via Tauri events. The UI reacti
 
 ## Tech stack
 
-| Layer | Technology |
-|-------|-----------|
-| Desktop framework | [Tauri 2](https://v2.tauri.app/) |
-| Frontend | [SvelteKit](https://svelte.dev/) + [Svelte 5](https://svelte.dev/docs/svelte/overview) |
-| Backend | Rust |
-| Process discovery | [sysinfo](https://crates.io/crates/sysinfo) |
-| Design system | Vercel Noir (true black, [Geist](https://vercel.com/font) fonts) |
+| Layer             | Technology                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| Desktop framework | [Tauri 2](https://v2.tauri.app/)                                                      |
+| Frontend          | [SvelteKit](https://svelte.dev/) + [Svelte 5](https://svelte.dev/docs/svelte/overview) |
+| Backend           | Rust                                                                                 |
+| Process discovery | [sysinfo](https://crates.io/crates/sysinfo)                                           |
+| Design system     | Vercel Noir (true black, [Geist](https://vercel.com/font) fonts)                      |
 
 ## Development
 
@@ -258,45 +259,6 @@ c9watch/
 ## Demo mode
 
 Press `Cmd+D` to toggle demo mode, which loads simulated sessions with animated status transitions. Useful for testing the UI without running real Claude Code sessions.
-
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
-- Setting up the development environment
-- Coding standards and commit message format
-- Pull request process
-- Platform-specific contributions (Windows, Linux)
-
-## Contributors
-
-Thanks to these wonderful people who have contributed to c9watch:
-
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/minchenlee"><img src="https://github.com/minchenlee.png?s=100" width="100px;" alt="Min-Chen Lee"/><br /><sub><b>Min-Chen Lee</b></sub></a><br /><a href="#code-minchenlee" title="Code">💻</a> <a href="#doc-minchenlee" title="Documentation">📖</a> <a href="#design-minchenlee" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/cynaptic"><img src="https://github.com/cynaptic.png?s=100" width="100px;" alt="Ray Lee"/><br /><sub><b>Ray Lee</b></sub></a><br /><a href="#code-cynaptic" title="Code">💻</a> <a href="#platform-cynaptic" title="Platform">📦</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/grimmerk"><img src="https://github.com/grimmerk.png?s=100" width="100px;" alt="Grimmer Kang"/><br /><sub><b>Grimmer Kang</b></sub></a><br /><a href="#code-grimmerk" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/stanimir93"><img src="https://github.com/stanimir93.png?s=100" width="100px;" alt="Stanimir"/><br /><sub><b>Stanimir</b></sub></a><br /><a href="#code-stanimir93" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/josh-dev-cho"><img src="https://github.com/josh-dev-cho.png?s=100" width="100px;" alt="josh.dev"/><br /><sub><b>josh.dev</b></sub></a><br /><a href="#code-josh-dev-cho" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/maxyharr"><img src="https://github.com/maxyharr.png?s=100" width="100px;" alt="Max Harris"/><br /><sub><b>Max Harris</b></sub></a><br /><a href="#code-maxyharr" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/vladan-me"><img src="https://github.com/vladan-me.png?s=100" width="100px;" alt="Vladan"/><br /><sub><b>Vladan</b></sub></a><br /><a href="#code-vladan-me" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/ajonesw"><img src="https://github.com/ajonesw.png?s=100" width="100px;" alt="Alex Jones-Wolsey"/><br /><sub><b>Alex Jones-Wolsey</b></sub></a><br /><a href="#code-ajonesw" title="Code">💻</a></td>
-    </tr>
-  </tbody>
-</table>
-
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
-
-<!-- ALL-CONTRIBUTORS-LIST:END -->
-
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and contribution details.
 
 ## License
 
