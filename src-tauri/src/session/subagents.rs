@@ -27,7 +27,7 @@ const TAG_TASK_ID: &str = "task-id";
 const TAG_TOOL_USE_ID: &str = "tool-use-id";
 const TAG_RESULT: &str = "result";
 const TAG_USAGE: &str = "usage";
-const TAG_NOTIFICATION: &str = "task-notification";
+const TASK_NOTIFICATION_OPEN: &str = "<task-notification>";
 
 /// Status of a detected subagent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -149,7 +149,7 @@ fn collect_user_tool_result_ids<P: AsRef<Path>>(path: P) -> HashMap<String, Stri
             continue;
         };
         let entry_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-        if entry_type != "user" {
+        if entry_type != ENTRY_TYPE_USER {
             continue;
         }
         let timestamp = value
@@ -165,7 +165,7 @@ fn collect_user_tool_result_ids<P: AsRef<Path>>(path: P) -> HashMap<String, Stri
             continue;
         };
         for block in content {
-            if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+            if block.get("type").and_then(Value::as_str) == Some(ENTRY_TYPE_TOOL_RESULT) {
                 if let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) {
                     completed
                         .entry(tool_use_id.to_string())
@@ -281,7 +281,7 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
         if entry_type == "assistant" {
             if let Some(blocks) = content {
                 for block in blocks {
-                    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                    if block.get("type").and_then(Value::as_str) != Some(ENTRY_TYPE_TOOL_USE) {
                         continue;
                     }
                     if block.get("id").and_then(Value::as_str) != Some(subagent_id) {
@@ -316,7 +316,7 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
         let is_result_here = content
             .map(|blocks| {
                 blocks.iter().any(|b| {
-                    b.get("type").and_then(Value::as_str) == Some("tool_result")
+                    b.get("type").and_then(Value::as_str) == Some(ENTRY_TYPE_TOOL_RESULT)
                         && b.get("tool_use_id").and_then(Value::as_str) == Some(subagent_id)
                 })
             })
@@ -360,7 +360,7 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
             if immediate_result_text.is_none() {
                 if let Some(blocks) = content {
                     for b in blocks {
-                        if b.get("type").and_then(Value::as_str) != Some("tool_result")
+                        if b.get("type").and_then(Value::as_str) != Some(ENTRY_TYPE_TOOL_RESULT)
                             || b.get("tool_use_id").and_then(Value::as_str) != Some(subagent_id)
                         {
                             continue;
@@ -417,28 +417,28 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
 
             // 2a. queue-operation events: content is a string containing
             //     `<task-notification>…</task-notification>`.
-            if entry_type == "queue-operation" {
+            if entry_type == ENTRY_TYPE_QUEUE_OPERATION {
                 let Some(content_str) = value.get("content").and_then(Value::as_str) else {
                     continue;
                 };
-                if !content_str.contains("<task-notification>") {
+                if !content_str.contains(TASK_NOTIFICATION_OPEN) {
                     continue;
                 }
-                let matches_id = extract_tag(content_str, "task-id")
+                let matches_id = extract_tag(content_str, TAG_TASK_ID)
                     .map(|v| v == aid)
                     .unwrap_or(false)
-                    || extract_tag(content_str, "tool-use-id")
+                    || extract_tag(content_str, TAG_TOOL_USE_ID)
                         .map(|v| v == subagent_id)
                         .unwrap_or(false);
                 if !matches_id {
                     continue;
                 }
-                let result_body = extract_tag(content_str, "result").unwrap_or_default();
+                let result_body = extract_tag(content_str, TAG_RESULT).unwrap_or_default();
                 if result_body.is_empty() {
                     continue;
                 }
                 // Populate stats from `<usage>` block.
-                if let Some(usage) = extract_tag(content_str, "usage") {
+                if let Some(usage) = extract_tag(content_str, TAG_USAGE) {
                     let (tt, tu, dm) = extract_usage_stats(&usage);
                     if tt.is_some() {
                         total_tokens = tt;
@@ -458,7 +458,7 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
             }
 
             // 2b. user-role messages that embed the notification text.
-            if entry_type != "user" {
+            if entry_type != ENTRY_TYPE_USER {
                 continue;
             }
             let content = value.get("message").and_then(|m| m.get("content"));
@@ -467,7 +467,7 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
                 .and_then(Value::as_array)
                 .map(|blocks| {
                     blocks.iter().any(|b| {
-                        b.get("type").and_then(Value::as_str) == Some("tool_result")
+                        b.get("type").and_then(Value::as_str) == Some(ENTRY_TYPE_TOOL_RESULT)
                             && b.get("tool_use_id").and_then(Value::as_str) == Some(subagent_id)
                     })
                 })
@@ -482,9 +482,9 @@ fn extract_transcript_from_file<P: AsRef<Path>>(
 
             // If the text contains a task-notification block, extract the
             // `<result>` body + usage stats. Otherwise fall back to the raw text.
-            let (result_text, usage_from_tag) = if text.contains("<task-notification>") {
-                let body = extract_tag(&text, "result").unwrap_or_else(|| text.clone());
-                let usage = extract_tag(&text, "usage");
+            let (result_text, usage_from_tag) = if text.contains(TASK_NOTIFICATION_OPEN) {
+                let body = extract_tag(&text, TAG_RESULT).unwrap_or_else(|| text.clone());
+                let usage = extract_tag(&text, TAG_USAGE);
                 (body, usage)
             } else {
                 (text, None)
@@ -575,7 +575,7 @@ fn extract_user_message_text(content: Option<&Value>) -> String {
         let mut out = String::new();
         for b in blocks {
             // Skip tool_result blocks — those are handled separately.
-            if b.get("type").and_then(Value::as_str) == Some("tool_result") {
+            if b.get("type").and_then(Value::as_str) == Some(ENTRY_TYPE_TOOL_RESULT) {
                 continue;
             }
             if let Some(t) = b.get("text").and_then(Value::as_str) {
@@ -915,7 +915,7 @@ mod tests {
     fn extract_tag_helper() {
         assert_eq!(extract_tag("<a>foo</a>", "a"), Some("foo".to_string()));
         assert_eq!(
-            extract_tag("x<result>multi\nline\nbody</result>y", "result"),
+            extract_tag("x<result>multi\nline\nbody</result>y", TAG_RESULT),
             Some("multi\nline\nbody".to_string())
         );
         assert_eq!(extract_tag("<a>foo", "a"), None);
