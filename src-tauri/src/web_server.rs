@@ -273,9 +273,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WsState>) {
 async fn handle_message(msg: ClientMsg) -> ServerMsg {
     match msg {
         ClientMsg::GetSessions => match crate::polling::detect_and_enrich_sessions() {
-            Ok(sessions) => ServerMsg::Sessions {
-                data: serde_json::to_value(&sessions).unwrap_or_default(),
-            },
+            Ok((sessions, _diagnostics)) => sessions_response(sessions),
             Err(e) => ServerMsg::Error { message: e },
         },
 
@@ -326,5 +324,26 @@ async fn handle_message(msg: ClientMsg) -> ServerMsg {
             data: serde_json::to_value(crate::project_infra::current_snapshot())
                 .unwrap_or_default(),
         },
+    }
+}
+
+fn sessions_response(sessions: Vec<crate::polling::Session>) -> ServerMsg {
+    ServerMsg::Sessions {
+        data: serde_json::to_value(&sessions).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_response_serializes_only_the_session_array() {
+        let msg = sessions_response(Vec::new());
+        let value = serde_json::to_value(msg).unwrap();
+
+        assert_eq!(value["type"], "sessions");
+        assert!(value["data"].is_array());
+        assert_eq!(value["data"].as_array().unwrap().len(), 0);
     }
 }
