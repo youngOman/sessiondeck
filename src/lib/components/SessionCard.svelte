@@ -3,7 +3,7 @@
 	import { SessionStatus } from '$lib/types';
 	import { sessionCostMap, costMode } from '$lib/stores/cost';
 	import { workersByPm } from '$lib/stores/sessions';
-	import { infra, portChipsFor, portUrl } from '$lib/stores/infra';
+	import { infra, isBroadProjectPath, portChipsFor, portUrl } from '$lib/stores/infra';
 	import { openExternalUrl } from '$lib/api';
 	import { formatCostOrTokens } from '$lib/cost-utils';
 
@@ -59,6 +59,7 @@
 	);
 
 	let infraChips = $derived(portChipsFor($infra, session.projectPath));
+	let canOpenProjectInEditor = $derived(!isBroadProjectPath(session.projectPath));
 
 	function handlePortClick(e: MouseEvent, port: number) {
 		e.stopPropagation();
@@ -307,18 +308,20 @@
 						<span class="port-label">{chip.label}</span>
 					</button>
 				{/each}
-				<button
-					type="button"
-					class="port-chip editor-chip"
-					title="Open project in VS Code"
-					onclick={handleVsCodeClick}
-				>
-					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<polyline points="16 18 22 12 16 6" />
-						<polyline points="8 6 2 12 8 18" />
-					</svg>
-					<span class="port-label">code</span>
-				</button>
+				{#if canOpenProjectInEditor}
+					<button
+						type="button"
+						class="port-chip editor-chip"
+						title="Open project in VS Code"
+						onclick={handleVsCodeClick}
+					>
+						<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<polyline points="16 18 22 12 16 6" />
+							<polyline points="8 6 2 12 8 18" />
+						</svg>
+						<span class="port-label">code</span>
+					</button>
+				{/if}
 			</div>
 
 			<!-- Status Label -->

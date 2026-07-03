@@ -25,6 +25,14 @@ pub fn open_session(pid: u32, project_path: String) -> Result<(), String> {
         return focus_iterm2_session(pid);
     }
 
+    if is_unsafe_project_path(&project_path) {
+        crate::debug_log::log_warn(&format!(
+            "[open_session] Refusing to open broad project path: {}",
+            project_path
+        ));
+        return activate_app_fallback(&app_name);
+    }
+
     // JetBrains IDEs: use URL scheme to focus the correct project window
     if is_jetbrains_ide(&app_name) {
         return focus_jetbrains_window(&app_name, &project_path);
@@ -70,6 +78,20 @@ pub fn open_session(pid: u32, project_path: String) -> Result<(), String> {
     activate_app_fallback(&app_name)?;
 
     Ok(())
+}
+
+fn is_unsafe_project_path(project_path: &str) -> bool {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() || trimmed == "~" {
+        return true;
+    }
+
+    let path = std::path::Path::new(trimmed);
+    if path == std::path::Path::new("/") {
+        return true;
+    }
+
+    dirs::home_dir().is_some_and(|home| path == home)
 }
 
 /// Get the controlling tty of a process via `ps -o tty=`
@@ -919,6 +941,17 @@ mod tests {
         // Use current process PID for testing
         let result = open_session(std::process::id(), "/tmp".to_string());
         println!("Result: {:?}", result);
+    }
+
+    #[test]
+    fn test_is_unsafe_project_path() {
+        assert!(is_unsafe_project_path(""));
+        assert!(is_unsafe_project_path("~"));
+        assert!(is_unsafe_project_path("/"));
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_unsafe_project_path(&home.to_string_lossy()));
+        }
+        assert!(!is_unsafe_project_path("/tmp/project"));
     }
 
     #[test]

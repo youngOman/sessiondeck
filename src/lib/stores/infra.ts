@@ -63,6 +63,12 @@ function dirMatches(a: string, b: string): boolean {
 	return a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
 }
 
+export function isBroadProjectPath(path: string): boolean {
+	const trimmed = path.trim().replace(/\/+$/, '');
+	if (!trimmed || trimmed === '/' || trimmed === '~') return true;
+	return /^\/Users\/[^/]+$/.test(trimmed) || /^\/home\/[^/]+$/.test(trimmed);
+}
+
 /**
  * Collect the port chips relevant to one session's project path:
  * compose services whose working_dir overlaps the project, plus bare dev
@@ -70,6 +76,7 @@ function dirMatches(a: string, b: string): boolean {
  */
 export function portChipsFor(snapshot: InfraSnapshot | null, projectPath: string): PortChip[] {
 	if (!snapshot) return [];
+	if (isBroadProjectPath(projectPath)) return [];
 	const chips: PortChip[] = [];
 
 	for (const project of snapshot.composeProjects ?? []) {
