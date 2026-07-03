@@ -25,10 +25,12 @@
 				clearStoredWsUrl();
 				throw new Error('Could not connect — check that the desktop app is running and the token is correct');
 			}
-			initializeInfraListeners();
 			const initial = await getSessions();
 			sessions.set(initial);
 			onconnected();
+			initializeInfraListeners().catch((err) => {
+				console.warn('[infra] Failed to initialize after connection:', err);
+			});
 		} catch (e) {
 			inputError = e instanceof Error ? e.message : 'Connection failed';
 			connecting = false;

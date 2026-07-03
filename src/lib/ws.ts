@@ -12,12 +12,23 @@ class WsClient {
 	private pendingReject: ((reason: any) => void) | null = null;
 	private listeners = new Map<string, Set<EventCallback>>();
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private requestQueue: Promise<unknown> = Promise.resolve();
 
 	get isConnected() {
 		return this._connected;
 	}
 
 	async connect(url: string): Promise<void> {
+		if (this.ws && this._connected && this.url === url) {
+			return;
+		}
+
+		if (this.ws) {
+			this.ws.close();
+			this.ws = null;
+			this._connected = false;
+		}
+
 		this.url = url;
 		return new Promise((resolve, reject) => {
 			try {
@@ -65,13 +76,45 @@ class WsClient {
 	}
 
 	async request<T = any>(type: string, data?: Record<string, any>): Promise<T> {
+		const run = () => this.sendRequest<T>(type, data);
+		const next = this.requestQueue.then(run, run);
+		this.requestQueue = next.catch(() => {});
+		return next;
+	}
+
+	private async sendRequest<T = any>(type: string, data?: Record<string, any>): Promise<T> {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			throw new Error('WebSocket not connected');
 		}
 		return new Promise((resolve, reject) => {
-			this.pendingResolve = resolve as (value: any) => void;
-			this.pendingReject = reject;
-			this.ws!.send(JSON.stringify({ type, ...data }));
+			const timeout = setTimeout(() => {
+				if (this.pendingReject === rejectWithCleanup) {
+					this.pendingResolve = null;
+					this.pendingReject = null;
+				}
+				reject(new Error(`WebSocket request timed out: ${type}`));
+			}, 10000);
+
+			const resolveWithCleanup = (value: any) => {
+				clearTimeout(timeout);
+				resolve(value);
+			};
+			const rejectWithCleanup = (reason: any) => {
+				clearTimeout(timeout);
+				reject(reason);
+			};
+
+			this.pendingResolve = resolveWithCleanup;
+			this.pendingReject = rejectWithCleanup;
+
+			try {
+				this.ws!.send(JSON.stringify({ type, ...data }));
+			} catch (e) {
+				this.pendingResolve = null;
+				this.pendingReject = null;
+				clearTimeout(timeout);
+				reject(e);
+			}
 		});
 	}
 
