@@ -62,6 +62,13 @@ pub enum SessionEntry {
         #[serde(rename = "sessionId")]
         session_id: String,
     },
+    #[serde(rename = "ai-title")]
+    AiTitle {
+        #[serde(rename = "aiTitle")]
+        ai_title: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -587,38 +594,50 @@ pub enum MessageType {
     System,
 }
 
-/// Extract the native custom title from Claude Code's JSONL entries.
+/// Extract the native display title from Claude Code's JSONL entries.
 /// Reads from the end since `/rename` re-appends metadata after compaction.
-/// Returns the last `custom-title` entry's value, or None if not found.
+/// Manual `custom-title` entries win over VS Code's generated `ai-title`.
 pub fn get_native_custom_title(entries: &[SessionEntry]) -> Option<String> {
+    let mut ai_title = None;
     for entry in entries.iter().rev() {
-        if let SessionEntry::CustomTitle { custom_title, .. } = entry {
-            return Some(custom_title.clone());
+        match entry {
+            SessionEntry::CustomTitle { custom_title, .. } => return Some(custom_title.clone()),
+            SessionEntry::AiTitle {
+                ai_title: title, ..
+            } if ai_title.is_none() => {
+                ai_title = Some(title.clone());
+            }
+            _ => {}
         }
     }
-    None
+    ai_title
 }
 
-/// Extract the native custom title from a JSONL file.
+/// Extract the native display title from a JSONL file.
 ///
-/// Scans the file for lines containing `"custom-title"` and parses only those.
-/// Returns the last (most recent) custom title found.
+/// Scans only title metadata lines. Manual `custom-title` entries win over
+/// VS Code's generated `ai-title`; each source uses its most recent value.
 pub fn get_native_custom_title_from_file(path: &std::path::Path) -> Option<String> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
 
-    let mut last_title: Option<String> = None;
+    let mut last_custom_title: Option<String> = None;
+    let mut last_ai_title: Option<String> = None;
     for line in reader.lines().map_while(Result::ok) {
-        if line.contains("\"custom-title\"") {
-            if let Ok(SessionEntry::CustomTitle { custom_title, .. }) =
-                serde_json::from_str::<SessionEntry>(&line)
-            {
-                last_title = Some(custom_title);
+        if line.contains("\"custom-title\"") || line.contains("\"ai-title\"") {
+            match serde_json::from_str::<SessionEntry>(&line) {
+                Ok(SessionEntry::CustomTitle { custom_title, .. }) => {
+                    last_custom_title = Some(custom_title);
+                }
+                Ok(SessionEntry::AiTitle { ai_title, .. }) => {
+                    last_ai_title = Some(ai_title);
+                }
+                _ => {}
             }
         }
     }
-    last_title
+    last_custom_title.or(last_ai_title)
 }
 
 #[cfg(test)]
@@ -1212,6 +1231,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_ai_title_entry() {
+        let json = r#"{"type":"ai-title","aiTitle":"Generated task title","sessionId":"abc-123"}"#;
+        let entry: Result<SessionEntry, _> = serde_json::from_str(json);
+        assert!(entry.is_ok());
+        if let Ok(SessionEntry::AiTitle {
+            ai_title,
+            session_id,
+        }) = entry
+        {
+            assert_eq!(ai_title, "Generated task title");
+            assert_eq!(session_id, "abc-123");
+        } else {
+            panic!("Expected AiTitle entry");
+        }
+    }
+
+    #[test]
     fn test_get_native_custom_title_found() {
         let entries = vec![
             SessionEntry::Unknown,
@@ -1229,6 +1265,62 @@ mod tests {
         assert_eq!(
             get_native_custom_title(&entries),
             Some("latest-name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_native_custom_title_falls_back_to_ai_title() {
+        let entries = vec![
+            SessionEntry::Unknown,
+            SessionEntry::AiTitle {
+                ai_title: "old-generated".to_string(),
+                session_id: "s1".to_string(),
+            },
+            SessionEntry::Unknown,
+            SessionEntry::AiTitle {
+                ai_title: "latest-generated".to_string(),
+                session_id: "s1".to_string(),
+            },
+        ];
+        assert_eq!(
+            get_native_custom_title(&entries),
+            Some("latest-generated".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_native_custom_title_prefers_custom_over_ai_title() {
+        let entries = vec![
+            SessionEntry::CustomTitle {
+                custom_title: "manual-name".to_string(),
+                session_id: "s1".to_string(),
+            },
+            SessionEntry::AiTitle {
+                ai_title: "newer-generated".to_string(),
+                session_id: "s1".to_string(),
+            },
+        ];
+        assert_eq!(
+            get_native_custom_title(&entries),
+            Some("manual-name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_native_custom_title_from_file_reads_ai_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"user","message":{"role":"user","content":"hello"}}"#.to_string()
+                + "\n"
+                + r#"{"type":"ai-title","aiTitle":"Generated from file","sessionId":"s1"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_native_custom_title_from_file(&path),
+            Some("Generated from file".to_string())
         );
     }
 
