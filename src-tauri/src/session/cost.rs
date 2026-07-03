@@ -32,18 +32,55 @@ fn get_pricing(model: &str, speed: &str) -> Option<ModelPricing> {
     };
 
     Some(match base {
-        "sonnet" => ModelPricing { input: 3.0, cache_write: 3.75, cache_read: 0.30, output: 15.0 },
-        "opus-new" if speed == "fast" => ModelPricing { input: 30.0, cache_write: 37.50, cache_read: 3.00, output: 150.0 },
-        "opus-new" => ModelPricing { input: 5.0, cache_write: 6.25, cache_read: 0.50, output: 25.0 },
-        "opus-legacy" => ModelPricing { input: 15.0, cache_write: 18.75, cache_read: 1.50, output: 75.0 },
-        "haiku-new" => ModelPricing { input: 1.0, cache_write: 1.25, cache_read: 0.10, output: 5.0 },
-        "haiku-legacy" => ModelPricing { input: 0.80, cache_write: 1.0, cache_read: 0.08, output: 4.0 },
+        "sonnet" => ModelPricing {
+            input: 3.0,
+            cache_write: 3.75,
+            cache_read: 0.30,
+            output: 15.0,
+        },
+        "opus-new" if speed == "fast" => ModelPricing {
+            input: 30.0,
+            cache_write: 37.50,
+            cache_read: 3.00,
+            output: 150.0,
+        },
+        "opus-new" => ModelPricing {
+            input: 5.0,
+            cache_write: 6.25,
+            cache_read: 0.50,
+            output: 25.0,
+        },
+        "opus-legacy" => ModelPricing {
+            input: 15.0,
+            cache_write: 18.75,
+            cache_read: 1.50,
+            output: 75.0,
+        },
+        "haiku-new" => ModelPricing {
+            input: 1.0,
+            cache_write: 1.25,
+            cache_read: 0.10,
+            output: 5.0,
+        },
+        "haiku-legacy" => ModelPricing {
+            input: 0.80,
+            cache_write: 1.0,
+            cache_read: 0.08,
+            output: 4.0,
+        },
         _ => return None,
     })
 }
 
 /// Calculate USD cost from token counts, model ID, and speed mode.
-fn calculate_cost(model: &str, speed: &str, input_tokens: u64, output_tokens: u64, cache_creation: u64, cache_read: u64) -> f64 {
+fn calculate_cost(
+    model: &str,
+    speed: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_creation: u64,
+    cache_read: u64,
+) -> f64 {
     let Some(pricing) = get_pricing(model, speed) else {
         return 0.0;
     };
@@ -89,32 +126,67 @@ fn parse_line(line: &str) -> Option<ParsedLine> {
         "assistant" => {
             let msg = obj.get("message")?;
             let usage = msg.get("usage")?;
-            let model = msg.get("model").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let model = msg
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
 
             // Skip synthetic messages — they carry zero tokens and produce empty cost records
             if model == "<synthetic>" {
                 return None;
             }
 
-            let speed = usage.get("speed").and_then(|v| v.as_str()).unwrap_or("standard");
+            let speed = usage
+                .get("speed")
+                .and_then(|v| v.as_str())
+                .unwrap_or("standard");
 
             Some(ParsedLine::Usage(UsageEntry {
                 model: model.to_string(),
                 speed: speed.to_string(),
-                input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                cache_creation_input_tokens: usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                cache_read_input_tokens: usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                timestamp: obj.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                session_id: obj.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                cwd: obj.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                input_tokens: usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                output_tokens: usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                cache_creation_input_tokens: usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                cache_read_input_tokens: usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                timestamp: obj
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                session_id: obj
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                cwd: obj
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             }))
         }
         "custom-title" => {
             let title = obj.get("customTitle").and_then(|v| v.as_str())?.to_string();
             let session_id = obj.get("sessionId").and_then(|v| v.as_str())?.to_string();
-            if title.is_empty() { return None; }
-            Some(ParsedLine::Name(SessionNameInfo::CustomTitle { session_id, title }))
+            if title.is_empty() {
+                return None;
+            }
+            Some(ParsedLine::Name(SessionNameInfo::CustomTitle {
+                session_id,
+                title,
+            }))
         }
         "user" => {
             let session_id = obj.get("sessionId").and_then(|v| v.as_str())?.to_string();
@@ -124,24 +196,33 @@ fn parse_line(line: &str) -> Option<ParsedLine> {
             }
             let content = match msg.get("content") {
                 Some(Value::String(s)) => s.clone(),
-                Some(Value::Array(arr)) => {
-                    arr.iter()
-                        .filter_map(|block| {
-                            if block.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                block.get("text").and_then(|v| v.as_str()).map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                }
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|block| {
+                        if block.get("type").and_then(|v| v.as_str()) == Some("text") {
+                            block
+                                .get("text")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 _ => return None,
             };
-            if super::parser::is_system_content(&content) { return None; }
+            if super::parser::is_system_content(&content) {
+                return None;
+            }
             let cleaned = super::sanitize::strip_system_tags(&content);
-            if cleaned.is_empty() { return None; }
-            Some(ParsedLine::Name(SessionNameInfo::FirstUserMessage { session_id, content: cleaned }))
+            if cleaned.is_empty() {
+                return None;
+            }
+            Some(ParsedLine::Name(SessionNameInfo::FirstUserMessage {
+                session_id,
+                content: cleaned,
+            }))
         }
         _ => None,
     }
@@ -154,12 +235,12 @@ pub struct SessionCostRecord {
     pub session_id: String,
     pub project: String,
     pub project_name: String,
-    pub model: String,        // primary model (highest cost)
+    pub model: String, // primary model (highest cost)
     pub cost: f64,
     #[serde(default)]
-    pub total_tokens: u64,    // input_tokens + output_tokens
-    pub timestamp: String,    // ISO 8601 — earliest assistant message
-    pub date: String,         // "2026-02-28" derived from timestamp
+    pub total_tokens: u64, // input_tokens + output_tokens
+    pub timestamp: String, // ISO 8601 — earliest assistant message
+    pub date: String,      // "2026-02-28" derived from timestamp
     #[serde(default)]
     pub session_name: String, // custom title or first user message
 }
@@ -262,7 +343,8 @@ fn scan_file(path: &std::path::Path) -> Vec<SessionCostRecord> {
                 if !entry.session_id.is_empty() {
                     let sid = entry.session_id.clone();
                     if !entry.cwd.is_empty() {
-                        cwd_by_session.entry(sid.clone())
+                        cwd_by_session
+                            .entry(sid.clone())
                             .or_insert_with(|| entry.cwd.clone());
                     }
                     let date = date_from_timestamp(&entry.timestamp);
@@ -272,7 +354,10 @@ fn scan_file(path: &std::path::Path) -> Vec<SessionCostRecord> {
             Some(ParsedLine::Name(SessionNameInfo::CustomTitle { session_id, title })) => {
                 custom_titles.insert(session_id, title);
             }
-            Some(ParsedLine::Name(SessionNameInfo::FirstUserMessage { session_id, content })) => {
+            Some(ParsedLine::Name(SessionNameInfo::FirstUserMessage {
+                session_id,
+                content,
+            })) => {
                 first_user_msg.entry(session_id).or_insert(content);
             }
             None => {}
@@ -280,7 +365,8 @@ fn scan_file(path: &std::path::Path) -> Vec<SessionCostRecord> {
     }
 
     // Pre-compute project_name per session to avoid redundant path parsing
-    let name_by_session: HashMap<&str, String> = cwd_by_session.iter()
+    let name_by_session: HashMap<&str, String> = cwd_by_session
+        .iter()
         .map(|(sid, cwd)| (sid.as_str(), project_name_from_path(cwd)))
         .collect();
 
@@ -288,7 +374,8 @@ fn scan_file(path: &std::path::Path) -> Vec<SessionCostRecord> {
 
     for ((session_id, date), day_entries) in by_key {
         let cwd = cwd_by_session.get(&session_id).cloned().unwrap_or_default();
-        let project_name = name_by_session.get(session_id.as_str())
+        let project_name = name_by_session
+            .get(session_id.as_str())
             .cloned()
             .unwrap_or_else(|| project_name_from_path(&cwd));
 
@@ -321,16 +408,19 @@ fn scan_file(path: &std::path::Path) -> Vec<SessionCostRecord> {
             .unwrap_or_default();
 
         // Resolve session name: custom title > first user message (truncated) > empty
-        let session_name = custom_titles.get(&session_id)
+        let session_name = custom_titles
+            .get(&session_id)
             .cloned()
-            .or_else(|| first_user_msg.get(&session_id).map(|msg| {
-                let truncated: String = msg.chars().take(40).collect();
-                if truncated.len() < msg.len() {
-                    format!("{}…", truncated)
-                } else {
-                    truncated
-                }
-            }))
+            .or_else(|| {
+                first_user_msg.get(&session_id).map(|msg| {
+                    let truncated: String = msg.chars().take(40).collect();
+                    if truncated.len() < msg.len() {
+                        format!("{}…", truncated)
+                    } else {
+                        truncated
+                    }
+                })
+            })
             .unwrap_or_default();
 
         records.push(SessionCostRecord {
@@ -361,7 +451,11 @@ pub fn get_cost_data() -> Result<CostData, String> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .map(|c: CostCache| {
             if c.version != CACHE_VERSION {
-                CostCache { version: CACHE_VERSION, file_mtimes: HashMap::new(), sessions: vec![] }
+                CostCache {
+                    version: CACHE_VERSION,
+                    file_mtimes: HashMap::new(),
+                    sessions: vec![],
+                }
             } else {
                 c
             }
@@ -411,7 +505,10 @@ pub fn get_cost_data() -> Result<CostData, String> {
     let files_to_scan: Vec<(String, PathBuf)> = candidates
         .iter()
         .filter(|(key, _, mtime)| {
-            cache.file_mtimes.get(key).map_or(true, |cached_mtime| mtime > cached_mtime)
+            cache
+                .file_mtimes
+                .get(key)
+                .map_or(true, |cached_mtime| mtime > cached_mtime)
         })
         .map(|(key, path, _)| (key.clone(), path.clone()))
         .collect();
@@ -450,7 +547,9 @@ pub fn get_cost_data() -> Result<CostData, String> {
         // Merge: remove old records for sessions that appear in new_records
         let new_session_ids: std::collections::HashSet<&str> =
             new_records.iter().map(|r| r.session_id.as_str()).collect();
-        cache.sessions.retain(|r| !new_session_ids.contains(r.session_id.as_str()));
+        cache
+            .sessions
+            .retain(|r| !new_session_ids.contains(r.session_id.as_str()));
         cache.sessions.extend(new_records);
 
         // Update mtimes for scanned files
@@ -489,7 +588,11 @@ fn aggregate(sessions: &[SessionCostRecord]) -> CostData {
         .map(|(date, mut sess)| {
             sess.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
             let cost = sess.iter().map(|s| s.cost).sum();
-            DailyCost { date, cost, sessions: sess }
+            DailyCost {
+                date,
+                cost,
+                sessions: sess,
+            }
         })
         .collect();
     daily_costs.sort_by(|a, b| b.date.cmp(&a.date));
@@ -497,18 +600,33 @@ fn aggregate(sessions: &[SessionCostRecord]) -> CostData {
     // --- Project costs (sorted by total cost desc) ---
     let mut by_project: HashMap<String, Vec<SessionCostRecord>> = HashMap::new();
     for s in sessions {
-        by_project.entry(s.project.clone()).or_default().push(s.clone());
+        by_project
+            .entry(s.project.clone())
+            .or_default()
+            .push(s.clone());
     }
     let mut project_costs: Vec<ProjectCost> = by_project
         .into_iter()
         .map(|(project, mut sess)| {
             sess.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
             let total = sess.iter().map(|s| s.cost).sum();
-            let project_name = sess.first().map(|s| s.project_name.clone()).unwrap_or_default();
-            ProjectCost { project, project_name, total_cost: total, sessions: sess }
+            let project_name = sess
+                .first()
+                .map(|s| s.project_name.clone())
+                .unwrap_or_default();
+            ProjectCost {
+                project,
+                project_name,
+                total_cost: total,
+                sessions: sess,
+            }
         })
         .collect();
-    project_costs.sort_by(|a, b| b.total_cost.partial_cmp(&a.total_cost).unwrap_or(std::cmp::Ordering::Equal));
+    project_costs.sort_by(|a, b| {
+        b.total_cost
+            .partial_cmp(&a.total_cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // --- Model costs (sorted by cost desc) ---
     let mut by_model: HashMap<String, f64> = HashMap::new();
@@ -520,7 +638,11 @@ fn aggregate(sessions: &[SessionCostRecord]) -> CostData {
         .into_iter()
         .filter(|(m, _)| get_pricing(m, "standard").is_some()) // exclude unknown models
         .map(|(model, cost)| {
-            let pct = if total_cost > 0.0 { cost / total_cost * 100.0 } else { 0.0 };
+            let pct = if total_cost > 0.0 {
+                cost / total_cost * 100.0
+            } else {
+                0.0
+            };
             ModelCost {
                 display_name: model_display_name(&model),
                 model,
@@ -529,9 +651,19 @@ fn aggregate(sessions: &[SessionCostRecord]) -> CostData {
             }
         })
         .collect();
-    model_costs.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    model_costs.sort_by(|a, b| {
+        b.cost
+            .partial_cmp(&a.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
-    CostData { total_cost, total_tokens, daily_costs, project_costs, model_costs }
+    CostData {
+        total_cost,
+        total_tokens,
+        daily_costs,
+        project_costs,
+        model_costs,
+    }
 }
 
 #[cfg(test)]
@@ -554,16 +686,28 @@ mod tests {
     fn test_get_pricing_opus_new_vs_legacy() {
         let new = get_pricing("claude-opus-4-6", "standard").unwrap();
         let legacy = get_pricing("claude-opus-4-1", "standard").unwrap();
-        assert!((new.input - 5.0).abs() < 1e-10, "Opus 4.6 input should be $5/MTok");
-        assert!((legacy.input - 15.0).abs() < 1e-10, "Opus 4.1 input should be $15/MTok");
+        assert!(
+            (new.input - 5.0).abs() < 1e-10,
+            "Opus 4.6 input should be $5/MTok"
+        );
+        assert!(
+            (legacy.input - 15.0).abs() < 1e-10,
+            "Opus 4.1 input should be $15/MTok"
+        );
     }
 
     #[test]
     fn test_get_pricing_opus_fast_mode() {
         let fast = get_pricing("claude-opus-4-6", "fast").unwrap();
         let standard = get_pricing("claude-opus-4-6", "standard").unwrap();
-        assert!((fast.input - 30.0).abs() < 1e-10, "Opus 4.6 fast input should be $30/MTok");
-        assert!((standard.input - 5.0).abs() < 1e-10, "Opus 4.6 standard input should be $5/MTok");
+        assert!(
+            (fast.input - 30.0).abs() < 1e-10,
+            "Opus 4.6 fast input should be $30/MTok"
+        );
+        assert!(
+            (standard.input - 5.0).abs() < 1e-10,
+            "Opus 4.6 standard input should be $5/MTok"
+        );
     }
 
     #[test]
@@ -574,8 +718,14 @@ mod tests {
     #[test]
     fn test_get_pricing_haiku_new_vs_legacy() {
         let new = get_pricing("claude-haiku-4-5-20251001", "standard").unwrap();
-        assert!((new.input - 1.0).abs() < 1e-10, "Haiku 4.5 input should be $1/MTok");
-        assert!((new.output - 5.0).abs() < 1e-10, "Haiku 4.5 output should be $5/MTok");
+        assert!(
+            (new.input - 1.0).abs() < 1e-10,
+            "Haiku 4.5 input should be $1/MTok"
+        );
+        assert!(
+            (new.output - 5.0).abs() < 1e-10,
+            "Haiku 4.5 output should be $5/MTok"
+        );
     }
 
     #[test]
@@ -631,7 +781,10 @@ mod tests {
     fn test_parse_line_user_returns_name() {
         let line = r#"{"type":"user","sessionId":"abc-123","timestamp":"2026-02-28T10:00:00Z","message":{"role":"user","content":"hello world"}}"#;
         let parsed = parse_line(line).unwrap();
-        assert!(matches!(parsed, ParsedLine::Name(SessionNameInfo::FirstUserMessage { .. })));
+        assert!(matches!(
+            parsed,
+            ParsedLine::Name(SessionNameInfo::FirstUserMessage { .. })
+        ));
     }
 
     #[test]
@@ -741,7 +894,11 @@ mod tests {
         let records = scan_file(&file);
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert_eq!(records.len(), 1, "Single-day session should produce 1 record");
+        assert_eq!(
+            records.len(),
+            1,
+            "Single-day session should produce 1 record"
+        );
         assert_eq!(records[0].date, "2026-03-20");
         assert_eq!(records[0].total_tokens, 450);
         assert!((records[0].cost - 0.003150).abs() < 1e-10);
@@ -805,8 +962,16 @@ mod tests {
         assert_eq!(data.total_cost, 3.0);
         assert_eq!(data.total_tokens, 13000);
 
-        let day20 = data.daily_costs.iter().find(|d| d.date == "2026-03-20").unwrap();
-        let day21 = data.daily_costs.iter().find(|d| d.date == "2026-03-21").unwrap();
+        let day20 = data
+            .daily_costs
+            .iter()
+            .find(|d| d.date == "2026-03-20")
+            .unwrap();
+        let day21 = data
+            .daily_costs
+            .iter()
+            .find(|d| d.date == "2026-03-21")
+            .unwrap();
         assert!((day20.cost - 1.0).abs() < 1e-10);
         assert!((day21.cost - 2.0).abs() < 1e-10);
     }

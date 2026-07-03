@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { setStoredWsUrl, getStoredWsUrl, clearStoredWsUrl, wsClient } from '$lib/ws';
 	import { initializeSessionListeners, sessions } from '$lib/stores/sessions';
+	import { initializeInfraListeners } from '$lib/stores/infra';
 	import { getSessions } from '$lib/api';
 
 	let { onconnected }: { onconnected: () => void } = $props();
@@ -24,6 +25,7 @@
 				clearStoredWsUrl();
 				throw new Error('Could not connect — check that the desktop app is running and the token is correct');
 			}
+			initializeInfraListeners();
 			const initial = await getSessions();
 			sessions.set(initial);
 			onconnected();

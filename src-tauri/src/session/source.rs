@@ -91,15 +91,30 @@ mod tests {
 
     #[test]
     fn session_kind_serializes_as_lowercase() {
-        assert_eq!(serde_json::to_string(&SessionKind::Interactive).unwrap(), "\"interactive\"");
-        assert_eq!(serde_json::to_string(&SessionKind::Background).unwrap(), "\"background\"");
-        assert_eq!(serde_json::to_string(&SessionKind::Unknown).unwrap(), "\"unknown\"");
+        assert_eq!(
+            serde_json::to_string(&SessionKind::Interactive).unwrap(),
+            "\"interactive\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionKind::Background).unwrap(),
+            "\"background\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionKind::Unknown).unwrap(),
+            "\"unknown\""
+        );
     }
 
     #[test]
     fn cli_activity_serializes_as_lowercase() {
-        assert_eq!(serde_json::to_string(&CliActivity::Busy).unwrap(), "\"busy\"");
-        assert_eq!(serde_json::to_string(&CliActivity::Idle).unwrap(), "\"idle\"");
+        assert_eq!(
+            serde_json::to_string(&CliActivity::Busy).unwrap(),
+            "\"busy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CliActivity::Idle).unwrap(),
+            "\"idle\""
+        );
     }
 
     #[test]

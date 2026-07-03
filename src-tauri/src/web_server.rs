@@ -26,6 +26,7 @@ pub struct WsState {
     pub auth_token: String,
     pub sessions_tx: broadcast::Sender<String>,
     pub notifications_tx: broadcast::Sender<String>,
+    pub infra_tx: broadcast::Sender<String>,
 }
 
 // ── Protocol types ──────────────────────────────────────────────────
@@ -63,6 +64,9 @@ enum ClientMsg {
 
     #[serde(rename = "getMemoryFiles")]
     GetMemoryFiles,
+
+    #[serde(rename = "getProjectInfra")]
+    GetProjectInfra,
 }
 
 /// Server → Client messages
@@ -89,6 +93,12 @@ enum ServerMsg {
 
     #[serde(rename = "memoryFiles")]
     MemoryFiles { data: serde_json::Value },
+
+    #[serde(rename = "projectInfra")]
+    ProjectInfra { data: serde_json::Value },
+
+    #[serde(rename = "infraUpdated")]
+    InfraUpdated { data: serde_json::Value },
 }
 
 // ── Server entrypoint ───────────────────────────────────────────────
@@ -193,6 +203,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WsState>) {
     crate::debug_log::log_info("[ws-server] Client connected");
     let mut sessions_rx = state.sessions_tx.subscribe();
     let mut notifications_rx = state.notifications_tx.subscribe();
+    let mut infra_rx = state.infra_tx.subscribe();
 
     loop {
         tokio::select! {
@@ -235,6 +246,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<WsState>) {
             Ok(notif_json) = notifications_rx.recv() => {
                 let msg = ServerMsg::Notification {
                     data: serde_json::from_str(&notif_json).unwrap_or_default(),
+                };
+                let json = serde_json::to_string(&msg).unwrap_or_default();
+                if socket.send(Message::Text(json)).await.is_err() {
+                    break;
+                }
+            }
+            // Push project infra updates from the infra polling loop
+            Ok(infra_json) = infra_rx.recv() => {
+                let msg = ServerMsg::InfraUpdated {
+                    data: serde_json::from_str(&infra_json).unwrap_or_default(),
                 };
                 let json = serde_json::to_string(&msg).unwrap_or_default();
                 if socket.send(Message::Text(json)).await.is_err() {
@@ -299,6 +320,11 @@ async fn handle_message(msg: ClientMsg) -> ServerMsg {
                 data: serde_json::to_value(&files).unwrap_or_default(),
             },
             Err(e) => ServerMsg::Error { message: e },
+        },
+
+        ClientMsg::GetProjectInfra => ServerMsg::ProjectInfra {
+            data: serde_json::to_value(crate::project_infra::current_snapshot())
+                .unwrap_or_default(),
         },
     }
 }

@@ -95,11 +95,7 @@ pub async fn run_daemon() -> Result<(), String> {
 
 // ── Connection handler ────────────────────────────────────────────────────────
 
-async fn handle_connection(
-    stream: UnixStream,
-    state: Arc<Mutex<DaemonState>>,
-    max_workers: usize,
-) {
+async fn handle_connection(stream: UnixStream, state: Arc<Mutex<DaemonState>>, max_workers: usize) {
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
@@ -164,7 +160,16 @@ async fn handle_connection(
             force,
             caller_pm_session_id,
             caller_pm_pid,
-        } => handle_adopt(state, session_id, force, caller_pm_session_id, caller_pm_pid).await,
+        } => {
+            handle_adopt(
+                state,
+                session_id,
+                force,
+                caller_pm_session_id,
+                caller_pm_pid,
+            )
+            .await
+        }
         RpcRequest::WorkersAll {
             caller_pm_session_id,
             caller_pm_pid,
@@ -428,7 +433,13 @@ async fn handle_list(state: Arc<Mutex<DaemonState>>) -> serde_json::Value {
     let dead: Vec<String> = st
         .workers
         .iter_mut()
-        .filter_map(|(id, worker)| if worker.is_alive() { None } else { Some(id.clone()) })
+        .filter_map(|(id, worker)| {
+            if worker.is_alive() {
+                None
+            } else {
+                Some(id.clone())
+            }
+        })
         .collect();
     for id in dead {
         st.workers.remove(&id);
@@ -487,15 +498,15 @@ fn cleanup_worker_dir(session_id: &str) {
         Ok(dir) => {
             if let Err(e) = std::fs::remove_dir_all(&dir) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!(
-                        "[pm_daemon] Failed to remove worker dir {:?}: {}",
-                        dir, e
-                    );
+                    eprintln!("[pm_daemon] Failed to remove worker dir {:?}: {}", dir, e);
                 }
             }
         }
         Err(e) => {
-            eprintln!("[pm_daemon] Cannot resolve worker dir for {}: {}", session_id, e);
+            eprintln!(
+                "[pm_daemon] Cannot resolve worker dir for {}: {}",
+                session_id, e
+            );
         }
     }
 }
@@ -514,7 +525,10 @@ async fn shutdown_daemon(state: Arc<Mutex<DaemonState>>) -> ! {
         let mut ids = Vec::with_capacity(st.workers.len());
         for (id, mut worker) in st.workers.drain() {
             if let Err(e) = worker.kill().await {
-                eprintln!("[pm_daemon] Failed to kill worker {} during shutdown: {}", id, e);
+                eprintln!(
+                    "[pm_daemon] Failed to kill worker {} during shutdown: {}",
+                    id, e
+                );
             }
             ids.push(id);
         }
@@ -595,11 +609,8 @@ async fn handle_workers_all(
         .iter_mut()
         .map(|(session_id, worker)| {
             let alive = worker.is_alive();
-            let status = resolve_status(
-                &worker.meta,
-                caller_pm_pid,
-                caller_pm_session_id.as_deref(),
-            );
+            let status =
+                resolve_status(&worker.meta, caller_pm_pid, caller_pm_session_id.as_deref());
             serde_json::json!({
                 "sessionId": session_id,
                 "pid": worker.meta.pid,
@@ -709,11 +720,8 @@ async fn handle_inbox_read(
             st.workers
                 .iter()
                 .filter_map(|(id, w)| {
-                    let status = resolve_status(
-                        &w.meta,
-                        caller_pm_pid,
-                        Some(&caller_pm_session_id),
-                    );
+                    let status =
+                        resolve_status(&w.meta, caller_pm_pid, Some(&caller_pm_session_id));
                     if status == WorkerStatus::OwnedByYou {
                         Some(id.clone())
                     } else {
@@ -968,7 +976,11 @@ mod tests {
             "expected 'does not exist', got: {}",
             err
         );
-        assert!(err.contains("/this/path/definitely/does/not/exist/h5test"), "path should appear in error: {}", err);
+        assert!(
+            err.contains("/this/path/definitely/does/not/exist/h5test"),
+            "path should appear in error: {}",
+            err
+        );
     }
 
     #[test]
@@ -1038,16 +1050,14 @@ mod tests {
 
         rt.block_on(async {
             // Step 1: bind socket
-            let _listener = UnixListener::bind(&sock_path)
-                .expect("bind Unix socket");
+            let _listener = UnixListener::bind(&sock_path).expect("bind Unix socket");
 
             // Assert: socket exists, pid file does NOT yet
             assert!(sock_path.exists(), "socket must exist after bind");
             assert!(!pid_path.exists(), "pid file must not exist before write");
 
             // Step 2: write pid file
-            fs::write(&pid_path, std::process::id().to_string())
-                .expect("write pid file");
+            fs::write(&pid_path, std::process::id().to_string()).expect("write pid file");
 
             // Assert: both now exist in the correct causal order
             assert!(sock_path.exists(), "socket still exists after pid write");

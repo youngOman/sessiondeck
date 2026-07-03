@@ -108,7 +108,11 @@ pub fn get_memory_files() -> Result<Vec<ProjectMemory>, String> {
     }
 
     // Sort projects alphabetically by name
-    results.sort_by(|a, b| a.project_name.to_lowercase().cmp(&b.project_name.to_lowercase()));
+    results.sort_by(|a, b| {
+        a.project_name
+            .to_lowercase()
+            .cmp(&b.project_name.to_lowercase())
+    });
 
     Ok(results)
 }

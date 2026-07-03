@@ -10,13 +10,13 @@ pub use detector::LegacySessionSource;
 pub mod detector_cli;
 pub use detector_cli::CliSessionSource;
 pub mod state;
-pub use state::DetectorState;
-pub use source::{CliActivity, DetectedSession, DetectionDiagnostics, SessionKind, SessionSource};
 pub use parser::{
     extract_messages, parse_all_entries, parse_last_n_entries, parse_sessions_index, ImageBlock,
     MessageContent, MessageType, SessionEntry, SessionIndexEntry, SessionsIndex,
 };
 pub use permissions::PermissionChecker;
+pub use source::{CliActivity, DetectedSession, DetectionDiagnostics, SessionKind, SessionSource};
+pub use state::DetectorState;
 pub use status::{
     determine_status, determine_status_with_context, get_pending_tool_input, get_pending_tool_name,
     SessionStatus,
@@ -42,8 +42,8 @@ pub use conversation::{get_conversation_data, Conversation, ConversationMessage}
 
 pub mod subagents;
 pub use subagents::{
-    active_subagents_for_path, all_subagents_by_session, get_subagent_transcript,
-    SubagentInfo, SubagentStatus, SubagentTranscript,
+    active_subagents_for_path, all_subagents_by_session, get_subagent_transcript, SubagentInfo,
+    SubagentStatus, SubagentTranscript,
 };
 
 use std::process::Command;
@@ -225,7 +225,10 @@ mod factory_tests {
 
     #[test]
     fn parse_semver_handles_extra_text() {
-        assert_eq!(parse_semver("Claude Code 2.2.0 — build abc"), Some((2, 2, 0)));
+        assert_eq!(
+            parse_semver("Claude Code 2.2.0 — build abc"),
+            Some((2, 2, 0))
+        );
     }
 
     #[test]

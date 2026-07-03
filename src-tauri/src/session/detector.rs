@@ -1,6 +1,9 @@
 use serde::Deserialize;
-use std::fs;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind};
 
 use super::source::{DetectedSession, DetectionDiagnostics, SessionDetectorError, SessionSource};
@@ -35,7 +38,9 @@ impl LegacySessionSource {
     }
 
     /// Detects all active Claude Code sessions
-    pub fn detect_sessions(&mut self) -> Result<(Vec<DetectedSession>, DetectionDiagnostics), SessionDetectorError> {
+    pub fn detect_sessions(
+        &mut self,
+    ) -> Result<(Vec<DetectedSession>, DetectionDiagnostics), SessionDetectorError> {
         // Refresh process information (only what we need: name, cwd, start_time)
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
@@ -79,7 +84,8 @@ impl LegacySessionSource {
         project_dirs: &[PathBuf],
     ) -> Vec<DetectedSession> {
         // Collect all session files with their modification times and project path
-        // Tuple: (modified_time, jsonl_path, project_dir, project_path, project_name, has_reliable_path)
+        // Tuple: (modified_time, jsonl_path, project_dir, project_path, project_name,
+        // has_reliable_path, recorded_cwd)
         let mut session_files: Vec<(
             std::time::SystemTime,
             PathBuf,
@@ -87,6 +93,7 @@ impl LegacySessionSource {
             PathBuf,
             String,
             bool,
+            Option<PathBuf>,
         )> = Vec::new();
 
         for project_dir in project_dirs {
@@ -140,11 +147,12 @@ impl LegacySessionSource {
 
                                     session_files.push((
                                         modified,
-                                        path,
+                                        path.clone(),
                                         project_dir.clone(),
                                         project_path,
                                         project_name,
                                         has_reliable_path,
+                                        latest_recorded_cwd(&path),
                                     ));
                                 }
                             }
@@ -179,8 +187,8 @@ impl LegacySessionSource {
             if let Some(meta) = self.read_session_metadata(proc.pid) {
                 if !used_session_ids.contains(&meta.session_id) {
                     // Find the matching session file and project info
-                    if let Some((_, _, project_dir, _, project_name, _)) =
-                        session_files.iter().find(|(_, path, _, _, _, _)| {
+                    if let Some((_, _, project_dir, _, project_name, _, _)) =
+                        session_files.iter().find(|(_, path, _, _, _, _, _)| {
                             path.file_stem().and_then(|s| s.to_str()) == Some(&meta.session_id)
                         })
                     {
@@ -203,25 +211,32 @@ impl LegacySessionSource {
             let encoded_cwd = encode_path_for_matching(&cwd_str);
 
             // Helper closure to check if a session matches the process path
-            let path_matches =
-                |project_dir: &Path, project_path: &Path, has_reliable_path: bool| -> bool {
-                    let dir_name = project_dir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
+            let path_matches = |project_dir: &Path,
+                                project_path: &Path,
+                                has_reliable_path: bool,
+                                recorded_cwd: Option<&PathBuf>|
+             -> bool {
+                if let Some(recorded_cwd) = recorded_cwd {
+                    return proc_cwd == recorded_cwd;
+                }
 
-                    // Method 1: Direct path comparison (exact or subdirectory match)
-                    let direct_match = if has_reliable_path {
-                        proc_cwd == project_path || proc_cwd.starts_with(project_path)
-                    } else {
-                        false
-                    };
+                let dir_name = project_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
 
-                    // Method 2: Encoded path comparison
-                    let encoded_match = dir_name == encoded_cwd;
-
-                    direct_match || encoded_match
+                // Method 1: Direct path comparison (exact or subdirectory match)
+                let direct_match = if has_reliable_path {
+                    proc_cwd == project_path || proc_cwd.starts_with(project_path)
+                } else {
+                    false
                 };
+
+                // Method 2: Encoded path comparison
+                let encoded_match = dir_name == encoded_cwd;
+
+                direct_match || encoded_match
+            };
 
             // Helper closure to check if session is not already used
             let session_available = |path: &Path| -> bool {
@@ -236,7 +251,15 @@ impl LegacySessionSource {
             // This prevents matching a new Claude instance (with no session file yet)
             // to an older session from the same project directory
             let matching_session = session_files.iter().find(
-                |(modified, path, project_dir, project_path, _, has_reliable_path)| {
+                |(
+                    modified,
+                    path,
+                    project_dir,
+                    project_path,
+                    _,
+                    has_reliable_path,
+                    recorded_cwd,
+                )| {
                     if !session_available(path) {
                         return false;
                     }
@@ -253,11 +276,16 @@ impl LegacySessionSource {
                         };
 
                     session_active_after_proc_start
-                        && path_matches(project_dir, project_path, *has_reliable_path)
+                        && path_matches(
+                            project_dir,
+                            project_path,
+                            *has_reliable_path,
+                            recorded_cwd.as_ref(),
+                        )
                 },
             );
 
-            if let Some((_, path, project_dir, _, project_name, _)) = matching_session {
+            if let Some((_, path, project_dir, _, project_name, _, _)) = matching_session {
                 if let Some(session_id) = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -276,7 +304,8 @@ impl LegacySessionSource {
             } else {
                 crate::debug_log::log_warn(&format!(
                     "PID={}: no matching session found for cwd={}",
-                    proc.pid, proc_cwd.display()
+                    proc.pid,
+                    proc_cwd.display()
                 ));
             }
         }
@@ -348,16 +377,18 @@ impl LegacySessionSource {
                 continue;
             }
 
-            // Check process name first (works for direct installs)
-            let name_match = name.contains("claude");
+            // Check process name first (works for direct installs). Keep this
+            // strict so Claude Desktop helpers and MCP servers with args like
+            // `--agent claudeCodeCLI` don't steal Claude Code sessions.
+            let name_match = name.eq_ignore_ascii_case("claude");
 
             // Also check command-line args (handles npm-installed Claude Code
             // where process.name() returns "node")
             let cmd_match = !name_match
-                && process.cmd().iter().any(|arg| {
-                    let a = arg.to_string_lossy();
-                    a.contains("claude") && !a.contains("c9watch")
-                });
+                && process
+                    .cmd()
+                    .iter()
+                    .any(|arg| is_claude_code_arg(&arg.to_string_lossy()));
 
             if name_match || cmd_match {
                 let cwd = process.cwd().map(|p| p.to_path_buf());
@@ -368,6 +399,18 @@ impl LegacySessionSource {
                     cwd,
                     start_time,
                 });
+            }
+        }
+
+        let lsof_cwds = pid_cwds(
+            &processes
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+        );
+        for process in &mut processes {
+            if let Some(cwd) = lsof_cwds.get(&process.pid) {
+                process.cwd = Some(cwd.clone());
             }
         }
 
@@ -398,6 +441,92 @@ impl LegacySessionSource {
 
         Ok(project_dirs)
     }
+}
+
+fn pid_cwds(pids: &[u32]) -> HashMap<u32, PathBuf> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = match Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-p", &list, "-Fpn"])
+        .output()
+    {
+        Ok(output) if !output.stdout.is_empty() => output,
+        _ => return HashMap::new(),
+    };
+
+    parse_lsof_cwds(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn latest_recorded_cwd(path: &Path) -> Option<PathBuf> {
+    const TAIL_BYTES: u64 = 64 * 1024;
+
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).ok()?;
+    if start > 0 {
+        if let Some((_, rest)) = raw.split_once('\n') {
+            raw = rest.to_string();
+        }
+    }
+
+    latest_recorded_cwd_from_str(&raw)
+}
+
+fn is_claude_code_arg(arg: &str) -> bool {
+    if arg.contains("c9watch") {
+        return false;
+    }
+
+    if arg == "claude" {
+        return true;
+    }
+
+    if Path::new(arg).file_name().and_then(|name| name.to_str()) == Some("claude") {
+        return true;
+    }
+
+    // npm-installed Claude Code runs under node; the script path contains the
+    // package name rather than ending in a `claude` binary.
+    arg.contains("@anthropic-ai/claude-code") || arg.contains("/claude-code/")
+}
+
+fn latest_recorded_cwd_from_str(raw: &str) -> Option<PathBuf> {
+    let mut cwd = None;
+    for line in raw.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(path) = value.get("cwd").and_then(|v| v.as_str()) {
+            cwd = Some(PathBuf::from(path));
+        }
+    }
+    cwd
+}
+
+fn parse_lsof_cwds(raw: &str) -> HashMap<u32, PathBuf> {
+    let mut result = HashMap::new();
+    let mut current_pid: Option<u32> = None;
+
+    for line in raw.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            current_pid = pid.parse::<u32>().ok();
+        } else if let (Some(path), Some(pid)) = (line.strip_prefix('n'), current_pid) {
+            result.insert(pid, PathBuf::from(path));
+        }
+    }
+
+    result
 }
 
 impl Default for LegacySessionSource {
@@ -520,5 +649,46 @@ mod tests {
             encode_path_for_matching("/Users/Name/project.v2"),
             "-Users-Name-project-v2"
         );
+    }
+
+    #[test]
+    fn test_parse_lsof_cwds() {
+        let parsed = parse_lsof_cwds(
+            "p29906\nfcwd\nn/Users/young/Developer/pdf-demo\np5395\nfcwd\nn/Users/young\n",
+        );
+
+        assert_eq!(
+            parsed.get(&29906),
+            Some(&PathBuf::from("/Users/young/Developer/pdf-demo"))
+        );
+        assert_eq!(parsed.get(&5395), Some(&PathBuf::from("/Users/young")));
+    }
+
+    #[test]
+    fn test_latest_recorded_cwd_from_str_uses_last_cwd() {
+        let raw = r#"
+{"type":"user","cwd":"/Users/young","sessionId":"a"}
+{"type":"assistant","cwd":"/Users/young/Developer/pdf-demo","sessionId":"a"}
+{"type":"last-prompt","sessionId":"a"}
+"#;
+
+        assert_eq!(
+            latest_recorded_cwd_from_str(raw),
+            Some(PathBuf::from("/Users/young/Developer/pdf-demo"))
+        );
+    }
+
+    #[test]
+    fn test_is_claude_code_arg() {
+        assert!(is_claude_code_arg("claude"));
+        assert!(is_claude_code_arg(
+            "/Users/young/.vscode/extensions/anthropic.claude-code/resources/native-binary/claude"
+        ));
+        assert!(is_claude_code_arg(
+            "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+        ));
+        assert!(!is_claude_code_arg("claudeCodeCLI"));
+        assert!(!is_claude_code_arg("--agent"));
+        assert!(!is_claude_code_arg("target/debug/c9watch"));
     }
 }

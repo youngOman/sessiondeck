@@ -3,6 +3,8 @@
 	import { SessionStatus } from '$lib/types';
 	import { sessionCostMap, costMode } from '$lib/stores/cost';
 	import { workersByPm } from '$lib/stores/sessions';
+	import { infra, portChipsFor, portUrl } from '$lib/stores/infra';
+	import { openExternalUrl } from '$lib/api';
 	import { formatCostOrTokens } from '$lib/cost-utils';
 
 	interface Props {
@@ -55,6 +57,18 @@
 	let costLabel = $derived(
 		costRecord ? formatCostOrTokens(costRecord.cost, costRecord.totalTokens, $costMode) : null
 	);
+
+	let infraChips = $derived(portChipsFor($infra, session.projectPath));
+
+	function handlePortClick(e: MouseEvent, port: number) {
+		e.stopPropagation();
+		openExternalUrl(portUrl(port));
+	}
+
+	function handleVsCodeClick(e: MouseEvent) {
+		e.stopPropagation();
+		openExternalUrl(`vscode://file${session.projectPath}`);
+	}
 
 	function getStatusColor(): string {
 		switch (session.status) {
@@ -278,6 +292,34 @@
 					<span class="branch-name">{session.gitBranch}</span>
 				</div>
 			{/if}
+
+			<!-- Project infra: clickable service ports + editor link -->
+			<div class="infra-row">
+				{#each infraChips as chip (chip.hostPort)}
+					<button
+						type="button"
+						class="port-chip"
+						class:degraded={chip.state !== 'running'}
+						title={chip.title}
+						onclick={(e) => handlePortClick(e, chip.hostPort)}
+					>
+						<span class="port-num">:{chip.hostPort}</span>
+						<span class="port-label">{chip.label}</span>
+					</button>
+				{/each}
+				<button
+					type="button"
+					class="port-chip editor-chip"
+					title="Open project in VS Code"
+					onclick={handleVsCodeClick}
+				>
+					<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<polyline points="16 18 22 12 16 6" />
+						<polyline points="8 6 2 12 8 18" />
+					</svg>
+					<span class="port-label">code</span>
+				</button>
+			</div>
 
 			<!-- Status Label -->
 			<div class="status-label" style="color: {getStatusColor()}">
@@ -539,6 +581,59 @@
 		color: var(--text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
+	}
+
+	.infra-row {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.port-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		padding: 1px 7px;
+		border: 1px solid var(--border-default);
+		border-radius: 9999px;
+		background: transparent;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--text-secondary);
+		cursor: pointer;
+		max-width: 170px;
+	}
+
+	.port-chip:hover {
+		color: var(--text-primary);
+		border-color: var(--border-focus);
+		background: var(--bg-card-hover);
+	}
+
+	.port-chip .port-num {
+		font-weight: 600;
+		color: var(--accent-blue);
+	}
+
+	.port-chip .port-label {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+
+	.port-chip.degraded {
+		opacity: 0.5;
+	}
+
+	.port-chip.degraded .port-num {
+		text-decoration: line-through;
+	}
+
+	.editor-chip svg {
+		flex-shrink: 0;
 	}
 
 

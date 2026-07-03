@@ -5,6 +5,7 @@ use super::source::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -29,8 +30,42 @@ struct CliAgent {
     status: Option<String>,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PidSessionMeta {
+    #[serde(default)]
+    pid: Option<u32>,
+    cwd: PathBuf,
+    #[serde(default = "default_kind")]
+    kind: String,
+    #[serde(rename = "startedAt")]
+    started_at: i64,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
 fn default_kind() -> String {
     "interactive".to_string()
+}
+
+fn session_kind(kind: &str) -> SessionKind {
+    match kind {
+        "interactive" => SessionKind::Interactive,
+        "background" => SessionKind::Background,
+        _ => SessionKind::Unknown,
+    }
+}
+
+fn cli_activity(status: Option<&str>) -> Option<CliActivity> {
+    match status {
+        Some("busy") => Some(CliActivity::Busy),
+        Some("idle") => Some(CliActivity::Idle),
+        _ => None,
+    }
 }
 
 pub struct CliSessionSource {
@@ -55,30 +90,16 @@ impl CliSessionSource {
 
     fn map_agent_to_session(&mut self, a: CliAgent) -> DetectedSession {
         let project_path = self.project_path_for_session(&a.cwd, &a.session_id);
-        DetectedSession {
-            pid: a.pid,
-            project_name: a
-                .cwd
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            session_id: Some(a.session_id),
+        detected_session_from_parts(
+            a.pid,
+            a.cwd,
             project_path,
-            kind: match a.kind.as_str() {
-                "interactive" => SessionKind::Interactive,
-                "background" => SessionKind::Background,
-                _ => SessionKind::Unknown,
-            },
-            started_at_ms: Some(a.started_at),
-            official_name: a.name,
-            cli_activity: match a.status.as_deref() {
-                Some("busy") => Some(CliActivity::Busy),
-                Some("idle") => Some(CliActivity::Idle),
-                _ => None,
-            },
-            cwd: a.cwd,
-        }
+            a.kind,
+            a.started_at,
+            a.session_id,
+            a.name,
+            a.status,
+        )
     }
 }
 
@@ -133,19 +154,34 @@ impl SessionSource for CliSessionSource {
             )));
         }
 
-        let agents: Vec<CliAgent> = serde_json::from_slice(&buf)
-            .map_err(|e| SessionDetectorError::Parse(e.to_string()))?;
+        let agents: Vec<CliAgent> =
+            serde_json::from_slice(&buf).map_err(|e| SessionDetectorError::Parse(e.to_string()))?;
 
-        // Filter out non-CLI entrypoints (e.g. sdk-ts from Zed/IDE integrations).
-        // `claude agents --json` lists every live agent including SDK-driven ones,
-        // but those don't write project JSONLs and aren't what c9watch monitors.
-        // The per-pid metadata at ~/.claude/sessions/<pid>.json carries `entrypoint`.
-        // If the file is missing or unreadable, keep the agent (older CC versions).
-        let sessions: Vec<DetectedSession> = agents
+        // Filter out known non-monitorable SDK entrypoints, but keep Claude Code
+        // surfaces that still write project JSONLs (CLI and VS Code). The per-pid
+        // metadata at ~/.claude/sessions/<pid>.json carries `entrypoint`. If the
+        // file is missing or unreadable, keep the agent for older CC versions.
+        let mut seen_session_ids = HashSet::new();
+        let mut sessions: Vec<DetectedSession> = agents
             .into_iter()
-            .filter(|a| is_cli_entrypoint(a.pid))
-            .map(|a| self.map_agent_to_session(a))
+            .filter(|a| is_monitorable_entrypoint(a.pid))
+            .map(|a| {
+                seen_session_ids.insert(a.session_id.clone());
+                self.map_agent_to_session(a)
+            })
             .collect();
+
+        // `claude agents --json` has returned an empty list for live VS Code
+        // sessions on some Claude Code builds. Recover those from the authoritative
+        // pid metadata, but only when the process is alive and its JSONL exists.
+        if let Some(home) = dirs::home_dir() {
+            sessions.extend(metadata_sessions_under(
+                &home,
+                &mut self.path_cache,
+                &seen_session_ids,
+                process_is_alive,
+            ));
+        }
 
         Ok((sessions, DetectionDiagnostics::default()))
     }
@@ -155,19 +191,22 @@ impl SessionSource for CliSessionSource {
     }
 }
 
-/// Returns true if the agent at this pid was launched as a `claude` CLI (not via
-/// the TypeScript/Python SDK). Reads `~/.claude/sessions/<pid>.json` and inspects
-/// the `entrypoint` field. Missing/unreadable file → keep (older CC builds didn't
-/// write this metadata; better to over-report than drop real CLIs).
-fn is_cli_entrypoint(pid: u32) -> bool {
+/// Returns true if the agent at this pid is a Claude Code surface c9watch can
+/// monitor. Reads `~/.claude/sessions/<pid>.json` and inspects `entrypoint`.
+/// Missing/unreadable file -> keep (older CC builds didn't write this metadata;
+/// better to over-report than drop real CLIs).
+fn is_monitorable_entrypoint(pid: u32) -> bool {
     match dirs::home_dir() {
-        Some(home) => is_cli_entrypoint_under(&home, pid),
+        Some(home) => is_monitorable_entrypoint_under(&home, pid),
         None => true,
     }
 }
 
-fn is_cli_entrypoint_under(home: &Path, pid: u32) -> bool {
-    let path = home.join(".claude").join("sessions").join(format!("{pid}.json"));
+fn is_monitorable_entrypoint_under(home: &Path, pid: u32) -> bool {
+    let path = home
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{pid}.json"));
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => return true,
@@ -177,9 +216,122 @@ fn is_cli_entrypoint_under(home: &Path, pid: u32) -> bool {
         Err(_) => return true,
     };
     match value.get("entrypoint").and_then(|v| v.as_str()) {
-        Some(ep) => ep == "cli",
+        Some("sdk-ts" | "sdk-py") => false,
+        Some("cli" | "claude-vscode") => true,
+        Some(_) => true,
         None => true,
     }
+}
+
+fn detected_session_from_parts(
+    pid: u32,
+    cwd: PathBuf,
+    project_path: PathBuf,
+    kind: String,
+    started_at: i64,
+    session_id: String,
+    name: Option<String>,
+    status: Option<String>,
+) -> DetectedSession {
+    let project_name = cwd
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    DetectedSession {
+        pid,
+        project_name,
+        session_id: Some(session_id),
+        project_path,
+        kind: session_kind(&kind),
+        started_at_ms: Some(started_at),
+        official_name: name,
+        cli_activity: cli_activity(status.as_deref()),
+        cwd,
+    }
+}
+
+fn metadata_sessions_under(
+    home: &Path,
+    path_cache: &mut HashMap<String, PathBuf>,
+    already_seen_session_ids: &HashSet<String>,
+    pid_is_alive: impl Fn(u32) -> bool,
+) -> Vec<DetectedSession> {
+    let sessions_dir = home.join(".claude").join("sessions");
+    let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+        return Vec::new();
+    };
+
+    let mut seen = already_seen_session_ids.clone();
+    let mut sessions = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let Some(file_pid) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+
+        if !pid_is_alive(file_pid) || !is_monitorable_entrypoint_under(home, file_pid) {
+            continue;
+        }
+
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<PidSessionMeta>(&raw) else {
+            continue;
+        };
+
+        let pid = meta.pid.unwrap_or(file_pid);
+        if pid != file_pid || !seen.insert(meta.session_id.clone()) {
+            continue;
+        }
+
+        let Some(project_path) = resolve_project_path_under(home, &meta.cwd, &meta.session_id)
+        else {
+            continue;
+        };
+        path_cache.insert(meta.session_id.clone(), project_path.clone());
+
+        sessions.push(detected_session_from_parts(
+            pid,
+            meta.cwd,
+            project_path,
+            meta.kind,
+            meta.started_at,
+            meta.session_id,
+            meta.name,
+            meta.status,
+        ));
+    }
+
+    sessions
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(pid: u32) -> bool {
+    pid != 0
 }
 
 /// Stateless resolver used by both production code (with real `home_dir()`) and
@@ -338,7 +490,10 @@ mod tests {
         let home = tmp.path();
         let cwd = PathBuf::from("/Users/test/proj");
         let session_id = "sess-scan";
-        let wrong_dir = home.join(".claude").join("projects").join("totally-different-dir");
+        let wrong_dir = home
+            .join(".claude")
+            .join("projects")
+            .join("totally-different-dir");
         std::fs::create_dir_all(&wrong_dir).unwrap();
         std::fs::write(wrong_dir.join(format!("{session_id}.jsonl")), b"").unwrap();
 
@@ -388,34 +543,41 @@ mod tests {
     fn entrypoint_filter_keeps_cli() {
         let tmp = tempfile::tempdir().unwrap();
         write_session_meta(tmp.path(), 1, Some("cli"));
-        assert!(is_cli_entrypoint_under(tmp.path(), 1));
+        assert!(is_monitorable_entrypoint_under(tmp.path(), 1));
+    }
+
+    #[test]
+    fn entrypoint_filter_keeps_claude_vscode() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_session_meta(tmp.path(), 6, Some("claude-vscode"));
+        assert!(is_monitorable_entrypoint_under(tmp.path(), 6));
     }
 
     #[test]
     fn entrypoint_filter_drops_sdk_ts() {
         let tmp = tempfile::tempdir().unwrap();
         write_session_meta(tmp.path(), 2, Some("sdk-ts"));
-        assert!(!is_cli_entrypoint_under(tmp.path(), 2));
+        assert!(!is_monitorable_entrypoint_under(tmp.path(), 2));
     }
 
     #[test]
     fn entrypoint_filter_drops_sdk_py() {
         let tmp = tempfile::tempdir().unwrap();
         write_session_meta(tmp.path(), 3, Some("sdk-py"));
-        assert!(!is_cli_entrypoint_under(tmp.path(), 3));
+        assert!(!is_monitorable_entrypoint_under(tmp.path(), 3));
     }
 
     #[test]
     fn entrypoint_filter_keeps_when_meta_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(is_cli_entrypoint_under(tmp.path(), 999));
+        assert!(is_monitorable_entrypoint_under(tmp.path(), 999));
     }
 
     #[test]
     fn entrypoint_filter_keeps_when_field_missing() {
         let tmp = tempfile::tempdir().unwrap();
         write_session_meta(tmp.path(), 4, None);
-        assert!(is_cli_entrypoint_under(tmp.path(), 4));
+        assert!(is_monitorable_entrypoint_under(tmp.path(), 4));
     }
 
     #[test]
@@ -424,7 +586,7 @@ mod tests {
         let dir = tmp.path().join(".claude").join("sessions");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("5.json"), "not json").unwrap();
-        assert!(is_cli_entrypoint_under(tmp.path(), 5));
+        assert!(is_monitorable_entrypoint_under(tmp.path(), 5));
     }
 
     #[test]
@@ -440,5 +602,58 @@ mod tests {
 
         let _result = lookup_with_cache(home, &mut cache, &cwd, session_id);
         assert!(!cache.contains_key(session_id));
+    }
+
+    #[test]
+    fn metadata_sessions_keep_live_vscode_session_with_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let pid = 42;
+        let cwd = PathBuf::from("/Users/test/proj");
+        let session_id = "vscode-session";
+
+        let sessions_dir = home.join(".claude").join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join(format!("{pid}.json")),
+            format!(
+                r#"{{
+                    "pid":{pid},
+                    "sessionId":"{session_id}",
+                    "cwd":"{}",
+                    "entrypoint":"claude-vscode",
+                    "kind":"interactive",
+                    "startedAt":1700000000000,
+                    "name":"proj-vscode",
+                    "status":null
+                }}"#,
+                cwd.display()
+            ),
+        )
+        .unwrap();
+
+        let encoded = encode_path_for_matching(&cwd.to_string_lossy());
+        let project_dir = home.join(".claude").join("projects").join(encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), b"{}\n").unwrap();
+
+        let mut cache = HashMap::new();
+        let sessions = metadata_sessions_under(home, &mut cache, &HashSet::new(), |p| p == pid);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].pid, pid);
+        assert_eq!(sessions[0].session_id.as_deref(), Some(session_id));
+        assert_eq!(sessions[0].official_name.as_deref(), Some("proj-vscode"));
+        assert_eq!(sessions[0].project_path, project_dir);
+    }
+
+    #[test]
+    fn metadata_sessions_skip_dead_pids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_session_meta(home, 99, Some("claude-vscode"));
+        let mut cache = HashMap::new();
+        let sessions = metadata_sessions_under(home, &mut cache, &HashSet::new(), |_| false);
+        assert!(sessions.is_empty());
     }
 }

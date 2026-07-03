@@ -276,7 +276,9 @@ async fn stdin_writer_task(
         let line = match serde_json::to_string(&envelope) {
             Ok(s) => s,
             Err(e) => {
-                let _ = msg.ack.send(Err(format!("Failed to serialize message: {}", e)));
+                let _ = msg
+                    .ack
+                    .send(Err(format!("Failed to serialize message: {}", e)));
                 continue;
             }
         };
@@ -327,7 +329,10 @@ async fn stdout_tee_task(
     let mut log_file = match log_file {
         Ok(f) => Some(f),
         Err(e) => {
-            eprintln!("[pm_worker] Failed to open stdout log {:?}: {}", log_path, e);
+            eprintln!(
+                "[pm_worker] Failed to open stdout log {:?}: {}",
+                log_path, e
+            );
             None
         }
     };
@@ -384,13 +389,25 @@ async fn stdout_tee_task(
                 }
             }
             "result" => {
-                let subtype = event.get("subtype").and_then(|v| v.as_str()).map(String::from);
-                let is_error = event.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                let subtype = event
+                    .get("subtype")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let is_error = event
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let duration_ms = event.get("duration_ms").and_then(|v| v.as_u64());
                 let num_turns = event.get("num_turns").and_then(|v| v.as_u64());
-                let stop_reason = event.get("stop_reason").and_then(|v| v.as_str()).map(String::from);
+                let stop_reason = event
+                    .get("stop_reason")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
                 let total_cost_usd = event.get("total_cost_usd").and_then(|v| v.as_f64());
-                let result_text = event.get("result").and_then(|v| v.as_str()).map(String::from);
+                let result_text = event
+                    .get("result")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
 
                 let result = TurnResult {
                     assistant_text: std::mem::take(&mut assistant_buf),
@@ -409,14 +426,14 @@ async fn stdout_tee_task(
 
                 if let Some(ref ctx) = inbox {
                     use crate::cli::pm_inbox::{self, EventStatus, InboxEvent, TurnResult};
-                    let status = if is_error || subtype.as_deref().map(|s| s != "success").unwrap_or(false) {
+                    let status = if is_error
+                        || subtype.as_deref().map(|s| s != "success").unwrap_or(false)
+                    {
                         EventStatus::Error
                     } else {
                         EventStatus::Done
                     };
-                    let excerpt = result_text
-                        .as_ref()
-                        .map(|s| pm_inbox::truncate_excerpt(s));
+                    let excerpt = result_text.as_ref().map(|s| pm_inbox::truncate_excerpt(s));
                     let err_msg = if matches!(status, EventStatus::Error) {
                         // Prefer the result `subtype` (e.g. "error_during_execution",
                         // "error_max_turns") since `stop_reason` is typically only
@@ -506,7 +523,10 @@ async fn stderr_tee_task(stderr: tokio::process::ChildStderr, log_path: PathBuf)
     let mut log_file = match log_file {
         Ok(f) => Some(f),
         Err(e) => {
-            eprintln!("[pm_worker] Failed to open stderr log {:?}: {}", log_path, e);
+            eprintln!(
+                "[pm_worker] Failed to open stderr log {:?}: {}",
+                log_path, e
+            );
             None
         }
     };

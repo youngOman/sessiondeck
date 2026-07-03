@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { initializeSessionListeners, sessions } from '$lib/stores/sessions';
+	import { initializeInfraListeners } from '$lib/stores/infra';
 	import { initializeSubagentPolling } from '$lib/stores/subagents';
 	import { initializeTasksPolling } from '$lib/stores/tasks';
 	import { getSessions } from '$lib/api';
@@ -16,6 +17,7 @@
 		// Browser/mobile: ConnectionScreen handles initialization after user connects
 		if (isTauri()) {
 			await initializeSessionListeners();
+			initializeInfraListeners();
 			initializeSubagentPolling();
 			initializeTasksPolling();
 

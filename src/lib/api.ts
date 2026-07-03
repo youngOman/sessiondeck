@@ -5,10 +5,10 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { get } from 'svelte/store';
-import type { Session, Conversation, HistoryEntry, DeepSearchHit, CostData, ProjectMemory, LogEntry } from './types';
+import type { Session, Conversation, HistoryEntry, DeepSearchHit, CostData, ProjectMemory, LogEntry, InfraSnapshot } from './types';
 import { isDemoMode } from './demo/mode';
 import { getDemoSessions, demoConversations } from './demo/data';
-import { wsClient, useWebSocket } from './ws';
+import { wsClient, useWebSocket, isTauri } from './ws';
 
 /**
  * Get all active Claude Code sessions
@@ -144,6 +144,34 @@ export async function getMemoryFiles(): Promise<ProjectMemory[]> {
 export async function revealInFileManager(path: string): Promise<void> {
 	if (get(isDemoMode)) return;
 	await invoke<void>('reveal_in_file_manager', { path });
+}
+
+/**
+ * Get the running project infrastructure snapshot
+ * (compose services + ports + bare dev servers)
+ */
+export async function getProjectInfra(): Promise<InfraSnapshot | null> {
+	if (get(isDemoMode)) return null;
+
+	if (useWebSocket()) {
+		return await wsClient.request<InfraSnapshot>('getProjectInfra');
+	}
+	return await invoke<InfraSnapshot>('get_project_infra');
+}
+
+/**
+ * Open an external URL (http://…, vscode://…) in the appropriate app.
+ * Tauri: via the opener plugin. Browser: new tab / protocol handler.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+	if (get(isDemoMode)) return;
+
+	if (isTauri()) {
+		const { openUrl } = await import('@tauri-apps/plugin-opener');
+		await openUrl(url);
+		return;
+	}
+	window.open(url, '_blank', 'noopener');
 }
 
 /**

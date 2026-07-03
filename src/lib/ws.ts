@@ -99,6 +99,10 @@ class WsClient {
 				this.emit('notification', msg.data);
 				return;
 			}
+			if (msg.type === 'infraUpdated') {
+				this.emit('infraUpdated', msg.data);
+				return;
+			}
 
 			// Request-response: resolve or reject the pending promise
 			if (msg.type === 'error') {

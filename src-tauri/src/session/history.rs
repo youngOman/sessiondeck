@@ -59,10 +59,13 @@ pub fn parse_history_jsonl(content: &str) -> Vec<HistoryEntry> {
                 }
                 None => {
                     let sid = raw.session_id.clone();
-                    by_session.insert(sid, SessionAccum {
-                        last: raw.clone(),
-                        first: raw,
-                    });
+                    by_session.insert(
+                        sid,
+                        SessionAccum {
+                            last: raw.clone(),
+                            first: raw,
+                        },
+                    );
                 }
             }
         }
@@ -249,7 +252,9 @@ fn extract_message_text(line: &str) -> Option<String> {
                 .iter()
                 .filter_map(|b| {
                     if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                        b.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
                     } else {
                         None
                     }
@@ -347,14 +352,17 @@ pub fn deep_search(
                         })
                         .collect();
                     // Find first message containing the query (as phrase).
-                    let hit = messages.iter().find(|(_, norm)| {
-                        phrase_match(norm, query_norm.as_str(), whole_word)
-                    });
+                    let hit = messages
+                        .iter()
+                        .find(|(_, norm)| phrase_match(norm, query_norm.as_str(), whole_word));
                     if let Some((text, norm)) = hit {
                         let snippet = extract_snippet(text, norm, query_norm.as_str());
                         if !snippet.is_empty() {
                             let mut guard = matched.lock().unwrap();
-                            guard.push(DeepSearchHit { session_id, snippet });
+                            guard.push(DeepSearchHit {
+                                session_id,
+                                snippet,
+                            });
                         }
                     }
                 }
@@ -538,9 +546,17 @@ mod tests {
     #[test]
     fn test_phrase_match_substring_default() {
         // Plain substring — case-insensitive caller lowercases both sides.
-        assert!(phrase_match("hello claude code world", "claude code", false));
+        assert!(phrase_match(
+            "hello claude code world",
+            "claude code",
+            false
+        ));
         // Two words present but not as a phrase → no match
-        assert!(!phrase_match("claude is here and code is there", "claude code", false));
+        assert!(!phrase_match(
+            "claude is here and code is there",
+            "claude code",
+            false
+        ));
     }
 
     #[test]

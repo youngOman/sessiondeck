@@ -244,3 +244,40 @@ export interface Task {
   activeForm: string;
   status: TaskStatus;
 }
+
+/**
+ * Project infrastructure: which dev services are running for each project
+ * directory and on which host ports (docker compose + bare dev servers).
+ */
+export interface PortMapping {
+  hostPort: number;
+  containerPort: number;
+  protocol: string;
+}
+
+export interface ServiceInfo {
+  service: string;
+  containerName: string;
+  state: string;
+  ports: PortMapping[];
+}
+
+export interface ComposeProject {
+  name: string;
+  workingDir: string;
+  configFiles: string[];
+  services: ServiceInfo[];
+}
+
+export interface BareServer {
+  pid: number;
+  process: string;
+  port: number;
+  cwd: string;
+}
+
+export interface InfraSnapshot {
+  composeProjects: ComposeProject[];
+  standaloneContainers: ServiceInfo[];
+  bareServers: BareServer[];
+}
