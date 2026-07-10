@@ -28,6 +28,14 @@ pub enum SessionStatus {
     Connecting,
 }
 
+/// Claude Code writes `[Request interrupted by user]` (or `… for tool use`) as a
+/// user entry whenever the user stops a turn. It is the only in-band signal that
+/// Claude has stopped owing a response — without it, an interrupted turn is
+/// indistinguishable from one that is still running.
+fn is_interrupt_marker(content: &str) -> bool {
+    content.contains("[Request interrupted by user")
+}
+
 /// Analyzes session entries to determine the current status
 ///
 /// # Arguments
@@ -57,46 +65,20 @@ pub fn determine_status(entries: &[SessionEntry]) -> SessionStatus {
         None => return SessionStatus::Connecting,
     };
 
-    // Also check if there are any recent progress entries AFTER the last meaningful entry.
-    // Progress entries (e.g., bash_progress) indicate active tool execution.
-    let last_meaningful_idx = entries
-        .iter()
-        .rposition(|entry| {
-            matches!(
-                entry,
-                SessionEntry::User { .. } | SessionEntry::Assistant { .. }
-            )
-        })
-        .unwrap_or(0);
-    // Only genuine `progress` entries count as activity. Other unknown entry
-    // types (last-prompt, mode, permission-mode, system, queue-operation, …) are
-    // metadata that newer Claude Code versions append even after a session ends,
-    // and must NOT be mistaken for a running tool — otherwise a long-finished
-    // session stays stuck on "Working".
-    let has_trailing_progress = entries[last_meaningful_idx + 1..]
-        .iter()
-        .any(|entry| matches!(entry, SessionEntry::Progress));
-
     match last_entry {
-        SessionEntry::User { base, message } => {
-            // Check if this is a tool_result or an actual user prompt.
-            // Tool results mean Claude is still processing.
-            if message.is_tool_result {
-                // This is a tool result - Claude should be generating its next response.
-                // But if it's old, the session might be idle (process died, etc.).
-                // 30s threshold (increased from 15s) accommodates API latency and longer operations.
-                if is_entry_recent(&base.timestamp, 30) {
-                    SessionStatus::Working
-                } else {
-                    SessionStatus::WaitingForInput
-                }
-            } else if is_entry_recent(&base.timestamp, 30) {
-                // Recent user prompt - Claude should be responding
-                SessionStatus::Working
-            } else {
-                // Old user prompt with no response - session is likely idle
-                SessionStatus::WaitingForInput
+        SessionEntry::User { message, .. } => {
+            // An interrupt marker means the user stopped the turn: Claude owes
+            // nothing and the session is idle, however recent the entry is.
+            if is_interrupt_marker(&message.content) {
+                return SessionStatus::WaitingForInput;
             }
+            // Otherwise Claude owes a response — to a fresh prompt, or to the
+            // tool result it just received. The JSONL stays silent while Claude
+            // thinks or a tool runs, so elapsed time carries no information about
+            // liveness; a threshold here only misreads extended thinking as idle.
+            // A dead process is dropped from the session list upstream, so any
+            // session reaching this point is backed by a live process.
+            SessionStatus::Working
         }
         SessionEntry::Assistant { base, message } => {
             // Analyze the assistant message content
@@ -115,26 +97,20 @@ pub fn determine_status(entries: &[SessionEntry]) -> SessionStatus {
             match raw_status {
                 SessionStatus::Working => {
                     // "Working" from analyze_assistant_message means either:
-                    // 1. Pending tool_use (auto-approved) - check for trailing progress
+                    // 1. Pending tool_use (auto-approved) - the tool is still running
                     // 2. Text with no stop_reason (but stop_reason is always None in JSONL)
-                    //
-                    // Use recency + trailing progress to distinguish active from idle
                     let has_pending_tools = has_pending_tool_uses(&message.content);
 
                     if has_pending_tools {
-                        // Tool is pending - check if there's active progress or recent activity.
-                        // A genuinely running tool keeps emitting progress entries (e.g.
-                        // bash_progress), so has_trailing_progress guards long-running tasks.
-                        // 20s threshold (increased from 10s) accommodates tool execution time.
-                        if has_trailing_progress || is_entry_recent(&base.timestamp, 20) {
-                            SessionStatus::Working
-                        } else {
-                            // Pending tool but no progress and no recent activity - the tool
-                            // is stale (hung, interrupted, or the process died). Treat as idle
-                            // so the session drops out of the Working group instead of hanging
-                            // there forever.
-                            SessionStatus::WaitingForInput
-                        }
+                        // An unmatched tool_use in a live session means the tool is
+                        // still running. Only Bash emits progress entries; subagents,
+                        // WebFetch and most MCP tools run silently for minutes, so
+                        // neither trailing progress nor entry age can distinguish a
+                        // running tool from a stale one. The cases a timeout was meant
+                        // to catch are covered elsewhere: an interrupted turn writes an
+                        // explicit marker entry, and a crashed process is dropped from
+                        // the session list. A threshold here only misreads long tools.
+                        SessionStatus::Working
                     } else {
                         // No pending tools, just text/thinking content.
                         // Since stop_reason is always None in JSONL, we use recency:
@@ -650,10 +626,12 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_use_pending_but_stale_is_idle() {
-        // An auto-approved tool left pending with an OLD timestamp and no trailing
-        // progress means the tool hung / the session was interrupted. It must NOT
-        // stay Working forever — it should drop to WaitingForInput (idle).
+    fn test_old_pending_tool_stays_working() {
+        // A pending tool with an OLD timestamp and no trailing progress is the
+        // normal shape of a long-running silent tool (subagent, WebFetch, MCP):
+        // it emits no progress entries and writes nothing until it returns.
+        // Age must not demote it to idle — an interrupted turn is recognised by
+        // its marker entry, and a crashed process leaves the session list.
         let entries = vec![SessionEntry::Assistant {
             base: create_old_base(),
             message: AssistantMessage {
@@ -670,10 +648,7 @@ mod tests {
                 usage: None,
             },
         }];
-        assert_eq!(
-            determine_status(&entries),
-            SessionStatus::WaitingForInput
-        );
+        assert_eq!(determine_status(&entries), SessionStatus::Working);
     }
 
     #[test]
@@ -988,8 +963,10 @@ mod tests {
     }
 
     #[test]
-    fn test_old_user_prompt_is_idle() {
-        // A user prompt from long ago with no response should be idle
+    fn test_old_user_prompt_stays_working() {
+        // An unanswered prompt means Claude still owes a response. It may have
+        // been thinking for minutes without writing to the JSONL, so age alone
+        // cannot demote it to idle.
         let entries = vec![SessionEntry::User {
             base: create_old_base(),
             message: UserMessage {
@@ -999,7 +976,55 @@ mod tests {
                 images: vec![],
             },
         }];
+        assert_eq!(determine_status(&entries), SessionStatus::Working);
+    }
+
+    #[test]
+    fn test_interrupt_marker_is_idle() {
+        // Stopping a turn writes `[Request interrupted by user]` as a user entry.
+        // This is the signal that Claude no longer owes a response.
+        let entries = vec![SessionEntry::User {
+            base: create_base(),
+            message: UserMessage {
+                role: "user".to_string(),
+                content: "[Request interrupted by user]".to_string(),
+                is_tool_result: false,
+                images: vec![],
+            },
+        }];
         assert_eq!(determine_status(&entries), SessionStatus::WaitingForInput);
+    }
+
+    #[test]
+    fn test_interrupt_marker_during_tool_use_is_idle() {
+        // Interrupting while a tool is pending writes the `… for tool use`
+        // variant, sometimes as the tool_result payload.
+        let entries = vec![SessionEntry::User {
+            base: create_base(),
+            message: UserMessage {
+                role: "user".to_string(),
+                content: "[Request interrupted by user for tool use]".to_string(),
+                is_tool_result: true,
+                images: vec![],
+            },
+        }];
+        assert_eq!(determine_status(&entries), SessionStatus::WaitingForInput);
+    }
+
+    #[test]
+    fn test_old_tool_result_stays_working() {
+        // After a tool returns, Claude thinks before writing its next entry.
+        // Extended thinking routinely exceeds any short threshold.
+        let entries = vec![SessionEntry::User {
+            base: create_old_base(),
+            message: UserMessage {
+                role: "user".to_string(),
+                content: "file contents here".to_string(),
+                is_tool_result: true,
+                images: vec![],
+            },
+        }];
+        assert_eq!(determine_status(&entries), SessionStatus::Working);
     }
 
     #[test]
