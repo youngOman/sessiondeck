@@ -262,4 +262,7 @@ Press `Cmd+D` to toggle demo mode, which loads simulated sessions with animated 
 
 ## License
 
-MIT
+MIT — Copyright (c) 2026 Minchen Lee. See [LICENSE](LICENSE).
+
+This repository is a fork of [minchenlee/c9watch](https://github.com/minchenlee/c9watch).
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people who built it.

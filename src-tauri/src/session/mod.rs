@@ -19,7 +19,7 @@ pub use source::{CliActivity, DetectedSession, DetectionDiagnostics, SessionKind
 pub use state::DetectorState;
 pub use status::{
     determine_status, determine_status_with_context, get_pending_tool_input, get_pending_tool_name,
-    SessionStatus,
+    last_conversation_entry_recent, SessionStatus,
 };
 
 pub mod history;

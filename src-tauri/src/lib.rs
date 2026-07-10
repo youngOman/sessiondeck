@@ -642,8 +642,23 @@ pub fn run() {
             // in the background with the tray icon even when no windows are visible.
             // Guard for desktop only: on mobile the OS controls the app lifecycle.
             #[cfg(not(mobile))]
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    api.prevent_exit();
+                }
+                // CloseRequested only hides the main window, so a running app has no
+                // visible window. macOS then answers Dock clicks, `open -a`, and
+                // Raycast launches with a Reopen event instead of starting a new
+                // process — without this arm the window would never come back.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    if let Some(win) = _app.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.unminimize();
+                        let _ = win.set_focus();
+                    }
+                }
+                _ => {}
             }
         });
 }

@@ -68,9 +68,14 @@ pub fn determine_status(entries: &[SessionEntry]) -> SessionStatus {
             )
         })
         .unwrap_or(0);
+    // Only genuine `progress` entries count as activity. Other unknown entry
+    // types (last-prompt, mode, permission-mode, system, queue-operation, …) are
+    // metadata that newer Claude Code versions append even after a session ends,
+    // and must NOT be mistaken for a running tool — otherwise a long-finished
+    // session stays stuck on "Working".
     let has_trailing_progress = entries[last_meaningful_idx + 1..]
         .iter()
-        .any(|entry| matches!(entry, SessionEntry::Unknown));
+        .any(|entry| matches!(entry, SessionEntry::Progress));
 
     match last_entry {
         SessionEntry::User { base, message } => {
@@ -118,12 +123,17 @@ pub fn determine_status(entries: &[SessionEntry]) -> SessionStatus {
 
                     if has_pending_tools {
                         // Tool is pending - check if there's active progress or recent activity.
+                        // A genuinely running tool keeps emitting progress entries (e.g.
+                        // bash_progress), so has_trailing_progress guards long-running tasks.
                         // 20s threshold (increased from 10s) accommodates tool execution time.
                         if has_trailing_progress || is_entry_recent(&base.timestamp, 20) {
                             SessionStatus::Working
                         } else {
-                            // Pending tool but no recent activity - likely stale
-                            SessionStatus::Working
+                            // Pending tool but no progress and no recent activity - the tool
+                            // is stale (hung, interrupted, or the process died). Treat as idle
+                            // so the session drops out of the Working group instead of hanging
+                            // there forever.
+                            SessionStatus::WaitingForInput
                         }
                     } else {
                         // No pending tools, just text/thinking content.
@@ -150,6 +160,26 @@ pub fn determine_status(entries: &[SessionEntry]) -> SessionStatus {
             SessionStatus::WaitingForInput
         }
     }
+}
+
+/// Checks whether the last actual conversation entry (User or Assistant) has a
+/// timestamp within the last N seconds.
+///
+/// Used to distinguish a genuinely active session from one that merely had
+/// metadata entries (last-prompt, mode, ai-title, …) appended after it ended —
+/// those keep the JSONL file's mtime fresh without any real activity, so a raw
+/// file-mtime check would falsely report the session as active.
+pub fn last_conversation_entry_recent(entries: &[SessionEntry], seconds: i64) -> bool {
+    entries
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            SessionEntry::User { base, .. } | SessionEntry::Assistant { base, .. } => {
+                Some(is_entry_recent(&base.timestamp, seconds))
+            }
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// Checks if a timestamp is within the last N seconds
@@ -620,6 +650,33 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_use_pending_but_stale_is_idle() {
+        // An auto-approved tool left pending with an OLD timestamp and no trailing
+        // progress means the tool hung / the session was interrupted. It must NOT
+        // stay Working forever — it should drop to WaitingForInput (idle).
+        let entries = vec![SessionEntry::Assistant {
+            base: create_old_base(),
+            message: AssistantMessage {
+                model: "claude-opus-4-5-20251101".to_string(),
+                id: "msg_test".to_string(),
+                role: "assistant".to_string(),
+                content: vec![MessageContent::ToolUse {
+                    id: "toolu_123".to_string(),
+                    name: "Read".to_string(),
+                    input: serde_json::json!({"file_path": "/test/file.txt"}),
+                }],
+                stop_reason: Some("tool_use".to_string()),
+                stop_sequence: None,
+                usage: None,
+            },
+        }];
+        assert_eq!(
+            determine_status(&entries),
+            SessionStatus::WaitingForInput
+        );
+    }
+
+    #[test]
     fn test_tool_use_pending_needs_permission() {
         // Bash with unknown command needs permission
         let entries = vec![SessionEntry::Assistant {
@@ -820,9 +877,9 @@ mod tests {
                     usage: None,
                 },
             },
-            // Progress entries (parsed as Unknown from "progress" type in JSONL)
-            SessionEntry::Unknown,
-            SessionEntry::Unknown,
+            // Progress entries (parsed from "progress" type in JSONL)
+            SessionEntry::Progress,
+            SessionEntry::Progress,
         ];
         // Should NOT be WaitingForInput - should see the pending Bash tool
         let status = determine_status(&entries);
@@ -833,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_unknown_entries_after_user_message_still_working() {
-        // Simulates: user message followed by Unknown entries (progress from sub-agent)
+        // Simulates: user message followed by progress entries (progress from sub-agent)
         let entries = vec![
             SessionEntry::User {
                 base: create_base(),
@@ -844,8 +901,8 @@ mod tests {
                     images: vec![],
                 },
             },
-            SessionEntry::Unknown,
-            SessionEntry::Unknown,
+            SessionEntry::Progress,
+            SessionEntry::Progress,
         ];
         assert_eq!(determine_status(&entries), SessionStatus::Working);
     }
@@ -855,6 +912,37 @@ mod tests {
         // If all entries are Unknown (e.g., all progress), treat as Connecting
         let entries = vec![SessionEntry::Unknown, SessionEntry::Unknown];
         assert_eq!(determine_status(&entries), SessionStatus::Connecting);
+    }
+
+    #[test]
+    fn test_finished_session_with_trailing_metadata_is_idle() {
+        // Regression: newer Claude Code versions append metadata entries
+        // (last-prompt, mode, permission-mode, system, queue-operation, …) AFTER
+        // a session has ended. These parse as Unknown and must NOT be mistaken for
+        // tool-execution progress — otherwise a long-finished session stays stuck
+        // on "Working" forever. A completed assistant turn (end_turn, old
+        // timestamp) followed by such metadata must resolve to idle.
+        let entries = vec![
+            SessionEntry::Assistant {
+                base: create_old_base(),
+                message: AssistantMessage {
+                    model: "claude-opus-4-5-20251101".to_string(),
+                    id: "msg_done".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![MessageContent::Text {
+                        text: "All done!".to_string(),
+                    }],
+                    stop_reason: Some("end_turn".to_string()),
+                    stop_sequence: None,
+                    usage: None,
+                },
+            },
+            // Non-progress metadata appended after the turn ended.
+            SessionEntry::Unknown,
+            SessionEntry::Unknown,
+            SessionEntry::Unknown,
+        ];
+        assert_eq!(determine_status(&entries), SessionStatus::WaitingForInput);
     }
 
     #[test]

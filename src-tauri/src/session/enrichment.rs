@@ -1,15 +1,16 @@
 use crate::session::source::{CliActivity, DetectedSession, DetectionDiagnostics, SessionSource};
 use crate::session::{
-    determine_status, get_pending_tool_input, get_pending_tool_name, parse_last_n_entries,
-    parse_sessions_index, SessionStatus,
+    determine_status, get_pending_tool_input, get_pending_tool_name,
+    last_conversation_entry_recent, parse_last_n_entries, parse_sessions_index, SessionStatus,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 /// Combined session information
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +50,58 @@ pub struct Session {
 /// Stores (mtime_as_nanos, cached_title) to avoid re-scanning JSONL files every poll cycle.
 static NATIVE_TITLE_CACHE: LazyLock<Mutex<HashMap<std::path::PathBuf, (u64, Option<String>)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// How long a resolved git branch stays cached before we re-run `git`.
+/// Keeps us from spawning a git subprocess for every session on every 2s poll,
+/// while still reflecting a branch switch within a few seconds.
+const GIT_BRANCH_TTL: Duration = Duration::from_secs(5);
+
+/// Cache of cwd → (resolved branch, when it was resolved), keyed by working dir.
+static GIT_BRANCH_CACHE: LazyLock<Mutex<HashMap<PathBuf, (Option<String>, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Resolves the *current* git branch for a session's working directory by asking
+/// git directly, cached with a short TTL. Returns `None` when the directory is
+/// not a git repo, git isn't available, or HEAD is detached — callers treat that
+/// as "no branch to show".
+pub(crate) fn get_cached_git_branch(cwd: &Path) -> Option<String> {
+    if let Ok(mut cache) = GIT_BRANCH_CACHE.lock() {
+        if let Some((branch, resolved_at)) = cache.get(cwd) {
+            if resolved_at.elapsed() < GIT_BRANCH_TTL {
+                return branch.clone();
+            }
+        }
+        let branch = resolve_git_branch(cwd);
+        cache.insert(cwd.to_path_buf(), (branch.clone(), Instant::now()));
+        branch
+    } else {
+        // Mutex poisoned — fall back to a direct query.
+        resolve_git_branch(cwd)
+    }
+}
+
+/// Runs `git rev-parse --abbrev-ref HEAD` in `cwd` and returns the branch name.
+/// Returns `None` for non-repos, errors, detached HEAD, or empty output.
+fn resolve_git_branch(cwd: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // "HEAD" means detached — not a useful branch label.
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch)
+    }
+}
 
 /// Look up the native custom title for a session JSONL, using a mtime-based cache.
 pub(crate) fn get_cached_native_title(path: &Path) -> Option<String> {
@@ -212,9 +265,18 @@ pub fn enrich_detected_sessions(
             }
         };
 
-        // Parse the session JSONL file to determine status and get latest message
+        // Parse the session JSONL file to determine status and get latest message.
+        //
+        // We read a generous tail (200 lines, not 20): newer Claude Code versions
+        // append large bursts of metadata entries (last-prompt, mode,
+        // permission-mode, ai-title, queue-operation, …) after a turn ends. If the
+        // window is too small it can contain ONLY metadata and zero User/Assistant
+        // entries, which makes determine_status fall through to Connecting — leaving
+        // a long-finished session wrongly grouped under "Working". 200 lines
+        // comfortably reaches the real conversation while still only reading the
+        // file's tail.
         let session_file_path = detected.project_path.join(format!("{}.jsonl", session_id));
-        let entries = match parse_last_n_entries(&session_file_path, 20) {
+        let entries = match parse_last_n_entries(&session_file_path, 200) {
             Ok(entries) => entries,
             Err(e) => {
                 crate::debug_log::log_warn(&format!(
@@ -231,9 +293,16 @@ pub fn enrich_detected_sessions(
             SessionStatus::Connecting
         } else {
             let raw_status = determine_status(&entries);
-            // Override WaitingForInput if the JSONL file was recently modified.
+            // Override WaitingForInput to Working when the session is genuinely
+            // streaming: the JSONL file was just touched AND the last real
+            // conversation entry is itself recent. The recency gate is essential —
+            // newer Claude Code versions keep appending metadata entries
+            // (last-prompt, mode, ai-title, …) long after a session ends, which
+            // keeps the file mtime fresh; without the gate those writes would pin a
+            // finished session on "Working" forever.
             if raw_status == SessionStatus::WaitingForInput
                 && is_file_recently_modified(&session_file_path, 8)
+                && last_conversation_entry_recent(&entries, 30)
             {
                 SessionStatus::Working
             } else {
@@ -268,6 +337,12 @@ pub fn enrich_detected_sessions(
         // Uses a static cache keyed by (path, mtime) to avoid re-scanning the JSONL every cycle.
         let native_title = get_cached_native_title(&session_file_path);
         let custom_title = native_title.or_else(|| custom_titles.get(&session_id).cloned());
+
+        // Resolve the CURRENT git branch live from the working directory (cached
+        // with a short TTL), so it reflects branch switches and works even when the
+        // session isn't in sessions-index.json. Fall back to the index's static
+        // value only when a live lookup yields nothing.
+        let git_branch = get_cached_git_branch(&detected.cwd).or(git_branch);
 
         sessions.push(Session {
             id: session_id,
@@ -439,6 +514,31 @@ pub fn count_messages_in_jsonl(path: &Path) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_git_branch_resolves_for_this_repo() {
+        // The crate itself lives inside a git repo, so resolving the branch for
+        // the manifest dir must yield a non-empty branch name.
+        let repo_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let branch = get_cached_git_branch(repo_dir);
+        assert!(
+            branch.as_deref().is_some_and(|b| !b.is_empty()),
+            "expected a branch name for the crate's own repo, got {branch:?}"
+        );
+    }
+
+    #[test]
+    fn test_git_branch_none_for_non_repo() {
+        // A directory that is not a git repo must resolve to None, not an error.
+        let tmp = std::env::temp_dir();
+        assert_eq!(get_cached_git_branch(&tmp), None);
+    }
+
+    #[test]
+    fn test_git_branch_none_for_missing_dir() {
+        let missing = Path::new("/tmp/c9watch-definitely-not-here-xyz-123");
+        assert_eq!(get_cached_git_branch(missing), None);
+    }
 
     #[test]
     fn test_truncate_string_no_truncation() {

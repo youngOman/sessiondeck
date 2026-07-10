@@ -69,6 +69,12 @@ pub enum SessionEntry {
         #[serde(rename = "sessionId")]
         session_id: String,
     },
+    /// A tool-execution progress entry (e.g. bash_progress). Claude Code writes
+    /// these while a tool is actively running, so their presence after the last
+    /// user/assistant entry is a reliable "still working" signal — unlike other
+    /// unknown entry types (last-prompt, mode, system, …) which are metadata and
+    /// must NOT be mistaken for activity.
+    Progress,
     #[serde(other)]
     Unknown,
 }
@@ -810,7 +816,9 @@ mod tests {
 
     #[test]
     fn test_parse_progress_entry() {
-        // Progress entries should parse as Unknown (not cause errors)
+        // "progress" entries must parse as their own Progress variant (not Unknown),
+        // so status detection can treat them as a genuine "tool is running" signal
+        // while ignoring other unknown metadata entries.
         let json = r#"{
             "type": "progress",
             "uuid": "test-uuid",
@@ -820,8 +828,30 @@ mod tests {
         }"#;
 
         let entry: Result<SessionEntry, _> = serde_json::from_str(json);
-        assert!(entry.is_ok(), "Progress entries should parse as Unknown");
-        assert!(matches!(entry.unwrap(), SessionEntry::Unknown));
+        assert!(entry.is_ok(), "Progress entries should parse successfully");
+        assert!(matches!(entry.unwrap(), SessionEntry::Progress));
+    }
+
+    #[test]
+    fn test_metadata_entries_parse_as_unknown() {
+        // Newer Claude Code metadata types must fall through to Unknown (NOT Progress),
+        // so they are never mistaken for tool-execution activity.
+        for ty in [
+            "last-prompt",
+            "mode",
+            "permission-mode",
+            "system",
+            "attachment",
+            "queue-operation",
+        ] {
+            let json = format!(r#"{{"type": "{ty}", "uuid": "u", "timestamp": "t"}}"#);
+            let entry: SessionEntry =
+                serde_json::from_str(&json).expect("should parse");
+            assert!(
+                matches!(entry, SessionEntry::Unknown),
+                "type {ty} should parse as Unknown, not Progress"
+            );
+        }
     }
 
     fn make_base(ts: &str) -> SessionEntryBase {

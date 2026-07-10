@@ -727,8 +727,9 @@ fn find_parent_app(pid: u32) -> Result<String, String> {
     // Platform-specific fallback
     #[cfg(target_os = "macos")]
     {
-        crate::debug_log::log_warn("[open_session] Falling back to Terminal");
-        Ok("Terminal".to_string())
+        let app_name = preferred_macos_terminal_app();
+        crate::debug_log::log_warn(&format!("[open_session] Falling back to {}", app_name));
+        Ok(app_name.to_string())
     }
     #[cfg(target_os = "linux")]
     {
@@ -738,6 +739,28 @@ fn find_parent_app(pid: u32) -> Result<String, String> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Ok("Terminal".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn preferred_macos_terminal_app() -> &'static str {
+    let user_app_dir = dirs::home_dir().map(|home| home.join("Applications"));
+    let user_app_dir = user_app_dir.as_deref();
+    preferred_macos_terminal_app_from_dirs(std::path::Path::new("/Applications"), user_app_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn preferred_macos_terminal_app_from_dirs(
+    system_app_dir: &std::path::Path,
+    user_app_dir: Option<&std::path::Path>,
+) -> &'static str {
+    let has_iterm =
+        |dir: &std::path::Path| dir.join("iTerm.app").is_dir() || dir.join("iTerm2.app").is_dir();
+
+    if has_iterm(system_app_dir) || user_app_dir.is_some_and(has_iterm) {
+        "iTerm"
+    } else {
+        "Terminal"
     }
 }
 
@@ -952,6 +975,31 @@ mod tests {
             assert!(is_unsafe_project_path(&home.to_string_lossy()));
         }
         assert!(!is_unsafe_project_path("/tmp/project"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_preferred_macos_terminal_app_prefers_iterm() {
+        let system_dir = tempfile::tempdir().unwrap();
+        let user_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(system_dir.path().join("iTerm.app")).unwrap();
+
+        assert_eq!(
+            preferred_macos_terminal_app_from_dirs(system_dir.path(), Some(user_dir.path())),
+            "iTerm"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_preferred_macos_terminal_app_falls_back_to_terminal() {
+        let system_dir = tempfile::tempdir().unwrap();
+        let user_dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            preferred_macos_terminal_app_from_dirs(system_dir.path(), Some(user_dir.path())),
+            "Terminal"
+        );
     }
 
     #[test]
