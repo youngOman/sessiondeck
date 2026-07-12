@@ -1,4 +1,4 @@
-use super::parser::{AssistantMessage, MessageContent, SessionEntry};
+use super::parser::{is_system_content, AssistantMessage, MessageContent, SessionEntry};
 use super::permissions::PermissionChecker;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,22 @@ fn is_interrupt_marker(content: &str) -> bool {
     content.contains("[Request interrupted by user")
 }
 
+/// Whether an entry reflects a real conversation turn for status purposes.
+///
+/// Assistant entries always count. User entries count unless they are Claude
+/// Code's own system-generated meta — slash-command output (`/effort`, `/model`),
+/// standalone bash, task notifications. Those are appended as `type: "user"`
+/// entries after a turn has ended, and the caveat block itself instructs "DO NOT
+/// respond to these messages", so treating one as a prompt awaiting a reply would
+/// pin a long-idle session to Working.
+fn is_status_bearing(entry: &SessionEntry) -> bool {
+    match entry {
+        SessionEntry::Assistant { .. } => true,
+        SessionEntry::User { message, .. } => !is_system_content(&message.content),
+        _ => false,
+    }
+}
+
 /// Analyzes session entries to determine the current status
 ///
 /// # Arguments
@@ -49,16 +65,11 @@ pub fn determine_status(entries: &[SessionEntry]) -> SessionStatus {
         return SessionStatus::Connecting;
     }
 
-    // Find the last meaningful entry (User or Assistant), skipping progress,
-    // file-history-snapshot, summary, and other non-status-bearing entries.
-    // Claude Code writes "progress" entries during tool execution (e.g., bash_progress)
-    // which must not override the actual session status.
-    let last_meaningful = entries.iter().rev().find(|entry| {
-        matches!(
-            entry,
-            SessionEntry::User { .. } | SessionEntry::Assistant { .. }
-        )
-    });
+    // Find the last status-bearing entry, skipping progress, file-history-snapshot,
+    // summary, and — crucially — Claude Code's own slash-command / bash / notification
+    // meta that it appends as `type: "user"` entries after a turn ends. Those are not
+    // prompts awaiting a reply (see is_status_bearing).
+    let last_meaningful = entries.iter().rev().find(|entry| is_status_bearing(entry));
 
     let last_entry = match last_meaningful {
         Some(entry) => entry,
@@ -1008,6 +1019,51 @@ mod tests {
                 images: vec![],
             },
         }];
+        assert_eq!(determine_status(&entries), SessionStatus::WaitingForInput);
+    }
+
+    #[test]
+    fn test_trailing_slash_command_meta_does_not_pin_working() {
+        // Real-world shape (pdf-demo session): a finished turn ends with an
+        // assistant reply, after which the user ran `/effort`. Claude Code
+        // appends the slash-command meta as `type: "user"` entries. These must
+        // be skipped so the status reflects the old assistant reply (idle), not
+        // be mistaken for a fresh prompt that pins the session to Working.
+        let entries = vec![
+            SessionEntry::Assistant {
+                base: create_old_base(),
+                message: AssistantMessage {
+                    model: "claude-opus-4-5-20251101".to_string(),
+                    id: "msg_reply".to_string(),
+                    role: "assistant".to_string(),
+                    content: vec![MessageContent::Text {
+                        text: "簡報骨架已放桌面。".to_string(),
+                    }],
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: None,
+                },
+            },
+            SessionEntry::User {
+                base: create_old_base(),
+                message: UserMessage {
+                    role: "user".to_string(),
+                    content: "<command-name>/effort</command-name>".to_string(),
+                    is_tool_result: false,
+                    images: vec![],
+                },
+            },
+            SessionEntry::User {
+                base: create_old_base(),
+                message: UserMessage {
+                    role: "user".to_string(),
+                    content: "<local-command-stdout>Set effort level to xhigh</local-command-stdout>"
+                        .to_string(),
+                    is_tool_result: false,
+                    images: vec![],
+                },
+            },
+        ];
         assert_eq!(determine_status(&entries), SessionStatus::WaitingForInput);
     }
 
